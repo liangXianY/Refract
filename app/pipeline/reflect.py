@@ -102,7 +102,14 @@ async def reflect(
     body: str,
     round_no: int = 1,
     max_rounds: int = 2,
+    history_hint: str = "",
 ) -> Reflection:
+    """反思。
+
+    history_hint：来自长期记忆的「历史表现较好的结构」。
+    它让评分有参照系——同一个结构过去 6 篇都拿高分，这次写得顺就不该压分；
+    反过来，这个结构历史上总出问题，就该更挑刺。
+    """
     if llm.cfg.mock:
         r = mock.mock_reflection(brief, body, round_no)
         lints = lint(brief, body)
@@ -115,7 +122,10 @@ async def reflect(
     try:
         raw = await llm.structured(
             system=_SYSTEM,
-            user=f"目标平台 {brief.platform}，语气 {brief.tone}，目标篇幅 {brief.word_limit} 字。\n\n以下是待审稿件：\n<<<\n{body[:12000]}\n>>>",
+            user=(
+                f"目标平台 {brief.platform}，语气 {brief.tone}，目标篇幅 {brief.word_limit} 字。"
+                f"{history_hint}\n\n以下是待审稿件：\n<<<\n{body[:12000]}\n>>>"
+            ),
             max_tokens=4000,
         )
     except Exception as exc:

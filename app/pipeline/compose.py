@@ -36,8 +36,14 @@ async def compose_stream(
     llm: LLMClient,
     brief: ContentBrief,
     hints: list[str] | None = None,
+    persona: str = "",
 ) -> AsyncIterator[tuple[str, str]]:
-    """产出 (kind, text)，kind ∈ {reasoning, content}。"""
+    """产出 (kind, text)，kind ∈ {reasoning, content}。
+
+    persona：来自项目记忆的人设卡（人设/语气/读者/禁用词）。
+    传进来就拼进 system prompt —— 这是「记忆真正被用起来」的地方，
+    没有它每篇稿子的风格都会飘。
+    """
     if llm.cfg.mock:
         body = mock.mock_body(brief)
         for piece in mock.mock_stream_chunks("先确认大纲节次和行为约束，再按节展开。", 8):
@@ -51,6 +57,8 @@ async def compose_stream(
     n_sections = max(1, len(brief.outline))
     per_section = max(120, brief.word_limit // n_sections)
     system = _SYSTEM.format(word_limit=brief.word_limit, n_sections=n_sections, per_section=per_section)
+    if persona:
+        system = system + persona
 
     hint_block = ""
     if hints:

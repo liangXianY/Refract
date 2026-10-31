@@ -1,17 +1,15 @@
-"""视频渲染器：把 brief + 分镜 + 风格，变成一个带完整质感的 canvas 动画网页。
+"""视频渲染器：生成「持续运动的 MG 动画」，不是分镜翻页。
 
-这是「视频制作」主模块的核心，全功能实现。
+核心转变（回应"这不就是 PPT 动态翻页么"的批评）：
+之前是「分镜切页」——每个镜头一张静态排版，加转场翻过去，本质是动态 PPT。
+现在改成「单镜头持续动画」——一个 20 秒的连贯画面里，十几个元素
+按时间轴依次登场、持续运动（环形进度转、数字滚动、进度条生长、
+日志逐条打出、波形波动、脉冲扩散），内容从 brief 动态注入。
 
-架构：
-- 每个风格是一段完整的 JS 渲染代码（含质感：像素的 buffer、线稿的手抖、HUD 的网格扫描线）
-- 通用部分（播放控制、时间轴、分镜驱动、标题换行）抽成公共 JS
-- 风格渲染函数接收 (ctx, W, H, DATA, shot, t)，从 DATA 动态取内容，不硬编码
+这才是 mg-styles-15 / video-shotcraft 那种「动画」，不是翻页。
 
-风格渲染模型：纯函数式 drawFrame(t)。给定时间 t 算出唯一画面，无随机、无累积状态。
-所以既能实时播放，也能被 headless 逐帧截图导出 mp4。
-
-本模块只做「网页动画产物」，不调任何 LLM（分镜由 storyboard.py 规则生成），
-因此全程不产生 API 费用。
+渲染模型：纯函数 drawFrame(t)。给定时间算出唯一画面，可实时播也可逐帧导出。
+全程不调 LLM，零 API 费用。
 """
 
 from __future__ import annotations
@@ -24,49 +22,190 @@ from ..schemas import ContentBrief
 from .storyboard import Shot, shots_to_data, storyboard
 from .styles import Style, get_style, list_styles
 
+
 # ============================================================
-# 通用 JS：播放控制 + 时间轴 + 分镜驱动 + 文本工具
+# HUD 风格：完整的持续动画（基于已验证的风格-HUD.html）
 # ============================================================
 
-_COMMON_JS = r"""
+_HUD_RENDER = r"""
 const clamp=(v,a,b)=>v<a?a:v>b?b:v;
 const seg=(t,s,d)=>{const p=(t-s)/d;return p<0?0:p>1?1:p};
 const easeOut=p=>1-Math.pow(1-p,3);
 const easeInOut=p=>p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
 function rnd(i){const x=Math.sin(i*127.1+311.7)*43758.5453;return x-Math.floor(x);}
 
-const SHOTS = DATA.shots;
-const SHOT_TIMES = [];
-let acc = 0;
-SHOTS.forEach(s=>{SHOT_TIMES.push([acc, acc+s.duration]); acc+=s.duration;});
-const DUR = acc;
+const DUR = 18; // 全片 18 秒持续动画
 
-function currentShot(t){
-  let idx = 0;
-  for(let i=0;i<SHOT_TIMES.length;i++){
-    if(t>=SHOT_TIMES[i][0] && t<SHOT_TIMES[i][1]){idx=i;break;}
-    if(t>=SHOT_TIMES[i][1]) idx=i;
-  }
-  return {idx, shot: SHOTS[idx], st: SHOT_TIMES[idx][0]};
+function mono(px,w){ctx.font=(w||500)+' '+px+'px ui-monospace,SFMono-Regular,Menlo,monospace';}
+function sans(px,w){ctx.font=(w||600)+' '+px+'px system-ui,-apple-system,"PingFang SC",sans-serif';}
+function glow(c,b){ctx.shadowColor=c;ctx.shadowBlur=b;}
+function noGlow(){ctx.shadowBlur=0;ctx.shadowColor='transparent';}
+
+// 主题数据：从 brief 注入
+const TITLE = DATA.topic || '内容生产流水线';
+const HOOK = DATA.hook || '';
+const SECTIONS = (DATA.shots||[]).filter(s=>s.task==='section').map(s=>s.screen_text);
+const FACTS = DATA.facts || [];
+const CTA = DATA.cta || '';
+
+// 三条能力链：优先用大纲节，否则用默认
+const BARS = (SECTIONS.length>=2?SECTIONS:['抓取解析','文案生成','动画产物']).slice(0,3).map((k,i)=>({
+  k: ['FETCH','COMPOSE','RENDER'][i],
+  zh: k,
+  s: 2.2 + i*1.0,
+  d: 2.4,
+  col: ['#22d3ee','#4ade80','#f59e0b'][i]
+}));
+
+// trace 日志：展示执行步骤
+const LOGS = [
+  { s: 3.6, tag:'plan',    txt:'拆解主题 → 大纲', col:'#22d3ee' },
+  { s: 4.5, tag:'compose', txt:(FACTS[0]?FACTS[0].claim:'生成正文'), col:'#4ade80' },
+  { s: 5.5, tag:'reflect', txt:'校验 · 评分通过', col:'#4ade80' },
+  { s: 6.5, tag:'render',  txt:'渲染动画产物', col:'#f59e0b' }
+];
+
+function drawGrid(t){
+  ctx.fillStyle=STYLE.bg;ctx.fillRect(0,0,W,H);
+  const g=ctx.createRadialGradient(W/2,H*.46,60,W/2,H*.46,W*.62);
+  g.addColorStop(0,'rgba(20,70,60,.30)');g.addColorStop(1,'rgba(5,8,12,0)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  const cell=40,p=easeOut(seg(t,0,1.2));
+  ctx.strokeStyle='rgba(64,190,150,.055)';ctx.lineWidth=1;ctx.beginPath();
+  for(let x=0;x<=W;x+=cell){const h=H*p;ctx.moveTo(x+.5,H/2-h/2);ctx.lineTo(x+.5,H/2+h/2);}
+  for(let y=0;y<=H;y+=cell){const w=W*p;ctx.moveTo(W/2-w/2,y+.5);ctx.lineTo(W/2+w/2,y+.5);}
+  ctx.stroke();
+  ctx.strokeStyle='rgba(64,190,150,.11)';ctx.beginPath();
+  for(let x=0;x<=W;x+=cell*5){ctx.moveTo(x+.5,0);ctx.lineTo(x+.5,H);}
+  for(let y=0;y<=H;y+=cell*5){ctx.moveTo(0,y+.5);ctx.lineTo(W,y+.5);}
+  ctx.stroke();
 }
 
-// 长标题自动换行，逐字浮现
-function drawTitle(str, cx, cy, size, weight, color, p, mono){
-  if(p<=0) return;
-  ctx.font=(weight||800)+' '+size+'px '+F;
-  const maxW = W*0.78;
-  const n = Math.ceil(str.length*p);
-  const shown = str.slice(0,n);
-  const lines=[]; let cur='';
-  for(const ch of shown){
-    const test=cur+ch;
-    if(ctx.measureText(test).width>maxW && cur){lines.push(cur);cur=ch;}else cur=test;
+function drawScan(t){
+  const y=((t*190)%(H+200))-100;
+  const g=ctx.createLinearGradient(0,y-90,0,y+90);
+  g.addColorStop(0,'rgba(34,211,238,0)');g.addColorStop(.5,'rgba(34,211,238,.055)');g.addColorStop(1,'rgba(34,211,238,0)');
+  ctx.fillStyle=g;ctx.fillRect(0,y-90,W,180);
+}
+
+function drawTopBar(t){
+  const p=easeOut(seg(t,.4,.9));if(p<=0)return;
+  ctx.globalAlpha=p;
+  ctx.strokeStyle='rgba(120,230,190,.14)';ctx.lineWidth=1;ctx.beginPath();
+  ctx.moveTo(118,74.5);ctx.lineTo(1482,74.5);ctx.stroke();
+  mono(12,700);ctx.fillStyle=STYLE.accent;ctx.textAlign='left';
+  ctx.fillText('REFRACT',118,58);
+  mono(11.5,500);ctx.fillStyle=STYLE.dim;ctx.fillText('// '+DATA.platformLabel,190,58);
+  const sec=Math.floor(t);
+  mono(11.5,500);ctx.fillStyle='#a8cdd9';ctx.textAlign='right';
+  ctx.fillText('T+'+String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0'),1482,58);
+  const blink=.45+.55*Math.abs(Math.sin(t*2.4));
+  glow(STYLE.accent,12);ctx.fillStyle='rgba(74,222,128,'+blink+')';
+  ctx.beginPath();ctx.arc(104,53,4,0,7);ctx.fill();noGlow();
+  ctx.globalAlpha=1;ctx.textAlign='left';
+}
+
+function drawPulse(t){
+  const cx=800,cy=430,base=seg(t,1.6,.8);if(base<=0)return;
+  for(let i=0;i<3;i++){
+    const ph=((t*.42+i/3)%1),r=150+ph*210,a=(1-ph)*.22*base;
+    ctx.strokeStyle='rgba(34,211,238,'+a.toFixed(3)+')';ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.stroke();
   }
-  if(cur)lines.push(cur);
-  ctx.fillStyle=color||STYLE.ink;
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  const lh=size*1.3; const y0=cy-(lines.length-1)*lh/2;
-  lines.forEach((ln,i)=>ctx.fillText(ln,cx,y0+i*lh));
+}
+
+function drawRing(t){
+  const cx=800,cy=430,R=148,pIn=easeOut(seg(t,1.0,1.4));if(pIn<=0)return;
+  const p=easeInOut(seg(t,1.8,9.0)); // 进度贯穿全片
+  ctx.save();ctx.translate(cx,cy);ctx.rotate(t*.16);
+  ctx.strokeStyle='rgba(120,230,190,.20)';ctx.lineWidth=1.4;
+  for(let i=0;i<72;i++){const a=i/72*Math.PI*2,long=i%6===0,r1=R+22,r2=R+22+(long?13:6);
+    ctx.beginPath();ctx.moveTo(Math.cos(a)*r1,Math.sin(a)*r1);ctx.lineTo(Math.cos(a)*r2,Math.sin(a)*r2);ctx.stroke();}
+  ctx.restore();
+  ctx.strokeStyle='rgba(120,230,190,.13)';ctx.lineWidth=2;
+  ctx.beginPath();ctx.arc(cx,cy,R,0,Math.PI*2*pIn);ctx.stroke();
+  const a0=-Math.PI/2,a1=a0+Math.PI*2*p*pIn;
+  ctx.strokeStyle=STYLE.accent;ctx.lineWidth=3.4;ctx.lineCap='round';glow(STYLE.accent,16);
+  ctx.beginPath();ctx.arc(cx,cy,R,a0,a1);ctx.stroke();
+  ctx.strokeStyle='rgba(74,222,128,.55)';ctx.lineWidth=1.2;noGlow();
+  ctx.beginPath();ctx.arc(cx,cy,R-14,a0,a0-Math.PI*1.4*p);ctx.stroke();
+  if(p>.02){const ex=cx+Math.cos(a1)*R,ey=cy+Math.sin(a1)*R;glow(STYLE.accent,22);
+    ctx.fillStyle='#b9f6ff';ctx.beginPath();ctx.arc(ex,ey,4.2,0,7);ctx.fill();noGlow();}
+  const val=Math.round(p*100);
+  sans(84,700);ctx.textAlign='center';ctx.textBaseline='middle';glow('#fff',18);
+  ctx.fillStyle='#fff';ctx.fillText(String(val).padStart(2,'0'),cx,cy-10);noGlow();
+  mono(15,600);ctx.fillStyle=STYLE.accent2;ctx.fillText('PIPELINE %',cx,cy+52);
+  ctx.fillStyle=STYLE.dim;mono(11.5,500);ctx.fillText('REFRACT / CORE',cx,cy+78);
+}
+
+function drawBars(t){
+  const x=118,y0=610,bw=380,gap=46;
+  BARS.forEach((b,i)=>{
+    const p=easeOut(seg(t,b.s,b.d)),pl=easeOut(seg(t,b.s-.8,.6));if(pl<=0)return;
+    const y=y0+i*gap;
+    ctx.globalAlpha=pl;mono(12.5,700);ctx.textAlign='left';ctx.textBaseline='alphabetic';
+    ctx.fillStyle=b.col;ctx.fillText(b.k,x,y-8);
+    sans(11.5,500);ctx.fillStyle=STYLE.dim;ctx.fillText(b.zh,x+78,y-8);ctx.globalAlpha=1;
+    if(p<=0)return;
+    ctx.fillStyle='rgba(255,255,255,.045)';ctx.fillRect(x,y,bw,3);
+    const w=bw*p,g=ctx.createLinearGradient(x,0,x+w,0);
+    g.addColorStop(0,b.col+'55');g.addColorStop(1,b.col);ctx.fillStyle=g;ctx.fillRect(x,y,w,3);
+    glow(b.col,12);ctx.fillStyle=b.col;ctx.fillRect(x+w-2,y-2,3,7);noGlow();
+    mono(11.5,600);ctx.fillStyle='#a8cdd9';ctx.textAlign='right';
+    ctx.fillText(Math.round(p*100)+'%',x+bw+44,y+4);ctx.textAlign='left';
+  });
+}
+
+function drawLog(t){
+  const x=1082,y0=300,lh=34,pIn=easeOut(seg(t,3.4,.7));if(pIn<=0)return;
+  ctx.strokeStyle='rgba(120,230,190,.16)';ctx.lineWidth=1;ctx.strokeRect(x-22,y0-58,436,286);
+  mono(11,700);ctx.fillStyle=STYLE.dim;ctx.textAlign='left';ctx.fillText('TRACE',x-4,y0-34);
+  ctx.fillStyle='rgba(120,230,190,.14)';ctx.fillRect(x-4,y0-26,396,1);
+  LOGS.forEach((l,i)=>{
+    const p=easeOut(seg(t,l.s,.5));if(p<=0)return;const y=y0+i*lh;
+    ctx.globalAlpha=p;mono(12,700);ctx.fillStyle=l.col;ctx.fillText('▸',x-4,y);
+    mono(11.5,600);ctx.fillStyle=l.col;ctx.fillText(l.tag.padEnd(8,' '),x+16,y);
+    const n=Math.ceil(l.txt.length*p);ctx.fillStyle='#a8cdd9';mono(11.5,500);
+    ctx.fillText(l.txt.slice(0,n),x+96,y);ctx.globalAlpha=1;
+  });
+  if(t>8.2){const on=Math.floor((t-8.2)*3)%2===0;if(on){ctx.fillStyle=STYLE.accent2;ctx.fillRect(x+96,y0+4*lh-11,7,13);}}
+}
+
+function drawWave(t){
+  const x0=1082,y0=152,w=436,h=62,p=easeOut(seg(t,1.4,1.0));if(p<=0)return;
+  ctx.strokeStyle='rgba(120,230,190,.10)';ctx.lineWidth=1;ctx.strokeRect(x0,y0,w,h);
+  ctx.beginPath();
+  for(let i=0;i<=w;i+=3){const u=i/w;
+    const amp=(Math.sin(u*21+t*5.5)*.5+Math.sin(u*8.3-t*3.1)*.5)*Math.sin(u*Math.PI);
+    const y=y0+h/2+amp*(h*.34)*p;i===0?ctx.moveTo(x0,y):ctx.lineTo(x0+i,y);}
+  glow(STYLE.accent2,8);ctx.strokeStyle='rgba(74,222,128,.72)';ctx.lineWidth=1.4;ctx.stroke();noGlow();
+  mono(10,700);ctx.fillStyle=STYLE.dim;ctx.textAlign='left';ctx.fillText('THROUGHPUT',x0+2,y0-10);
+}
+
+function drawTitle(t){
+  const p=easeOut(seg(t,9.6,.9));if(p<=0)return;
+  ctx.globalAlpha=p;
+  sans(52,800);ctx.textAlign='center';glow('rgba(74,222,128,.5)',26);
+  ctx.fillStyle='#fff';
+  const n=Math.ceil(TITLE.length*p);ctx.fillText(TITLE.slice(0,n),800,810);
+  noGlow();mono(12.5,500);ctx.fillStyle=STYLE.accent;ctx.fillText('PLAN · EXECUTE · REFLECT',800,846);
+  if(HOOK){ctx.font='400 20px system-ui,"PingFang SC",sans-serif';ctx.fillStyle=STYLE.dim;
+    ctx.fillText(HOOK.slice(0,Math.ceil(HOOK.length*p)),800,876);}
+  ctx.globalAlpha=1;ctx.textAlign='left';
+}
+
+function drawFrame(t){
+  t=clamp(t,0,DUR);
+  drawGrid(t);
+  drawScan(t);
+  drawTopBar(t);
+  drawWave(t);
+  drawPulse(t);
+  drawRing(t);
+  drawBars(t);
+  drawLog(t);
+  drawTitle(t);
+  noGlow();
 }
 
 // 播放控制
@@ -75,7 +214,7 @@ const tcEl=document.getElementById('tc');
 const ppEl=document.getElementById('pp');
 const rpEl=document.getElementById('rp');
 const fmt=s=>String(Math.floor(s/60)).padStart(2,'0')+':'+String(Math.floor(s%60)).padStart(2,'0');
-let t0=performance.now(), paused=false, pausedAt=0;
+let t0=performance.now(),paused=false,pausedAt=0;
 function tick(now){
   const t=paused?pausedAt:((now-t0)/1000)%DUR;
   drawFrame(t);
@@ -83,362 +222,30 @@ function tick(now){
   tcEl.textContent=fmt(t)+' / '+fmt(DUR);
   requestAnimationFrame(tick);
 }
-ppEl.onclick=()=>{
-  if(paused){t0=performance.now()-pausedAt*1000;paused=false;ppEl.textContent='暂停';}
-  else{pausedAt=Math.max(0,((performance.now()-t0)/1000)%DUR);paused=true;ppEl.textContent='播放';}
-};
+ppEl.onclick=()=>{if(paused){t0=performance.now()-pausedAt*1000;paused=false;ppEl.textContent='暂停';}else{pausedAt=Math.max(0,((performance.now()-t0)/1000)%DUR);paused=true;ppEl.textContent='播放';}};
 rpEl.onclick=()=>{t0=performance.now();paused=false;ppEl.textContent='暂停';};
-document.getElementById('prog').onclick=e=>{
-  const r=e.currentTarget.getBoundingClientRect();
-  const p=clamp((e.clientX-r.left)/r.width,0,1);
-  t0=performance.now()-p*DUR*1000;
-  if(paused)pausedAt=p*DUR;
-};
+document.getElementById('prog').onclick=e=>{const r=e.currentTarget.getBoundingClientRect();const p=clamp((e.clientX-r.left)/r.width,0,1);t0=performance.now()-p*DUR*1000;if(paused)pausedAt=p*DUR;};
 tcEl.textContent='00:00 / '+fmt(DUR);
-window.renderAt=at=>{drawFrame(clamp(at,0,DUR));};
-"""
 
-# 启动逻辑放在 render JS 之后（因为 render JS 里可能有 const 声明，drawFrame 依赖它们）
-_BOOT_JS = r"""
 const QS=new URLSearchParams(location.search);
-const HAS_T=QS.has('t');
-const FIXED=QS.has('scene')?Math.max(0,parseInt(QS.get('scene'),10)||0):-1;
-if(HAS_T||FIXED>=0){
-  const at=FIXED>=0?SHOT_TIMES[FIXED][0]+1.5:parseFloat(QS.get('t')||'1.5');
-  paused=true;pausedAt=at;
-  drawFrame(at);
-  fillEl.style.width=(at/DUR*100)+'%';
-  tcEl.textContent=fmt(at)+' / '+fmt(DUR);
-  ppEl.textContent='播放';
-  requestAnimationFrame(()=>drawFrame(at));
-}else{
-  requestAnimationFrame(tick);
-}
+if(QS.has('t')||QS.has('scene')){
+  const at=QS.has('t')?parseFloat(QS.get('t')||'3'):3;
+  paused=true;pausedAt=at;drawFrame(at);
+  fillEl.style.width=(at/DUR*100)+'%';tcEl.textContent=fmt(at)+' / '+fmt(DUR);
+  ppEl.textContent='播放';requestAnimationFrame(()=>drawFrame(at));
+}else{requestAnimationFrame(tick);}
+window.renderAt=at=>drawFrame(clamp(at,0,DUR));
 """
 
-# ============================================================
-# 像素风渲染 JS（buffer 放大，真 8-bit 质感）
-# ============================================================
 
-_PIXEL_RENDER = r"""
-// 像素风：低分辨率 buffer 放大 4 倍，每一笔都是方块
-const BW=400, BH=225;
-const buf=document.createElement('canvas');
-buf.width=BW; buf.height=BH;
-const b=buf.getContext('2d');
-b.imageSmoothingEnabled=false;
-function px(x,y,w,h,col){b.fillStyle=col;b.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h));}
-
-function drawFrame(t){
-  t=clamp(t,0,DUR);
-  const {idx,shot,st}=currentShot(t);
-
-  // 背景：按镜头任务给不同底色
-  let bg=STYLE.bg, bg2=STYLE.bg2;
-  if(shot.task==='cover'){bg='#1a1c2c';bg2='#232842';}
-  if(shot.task==='section'){bg='#1a1c2c';bg2='#29366f';}
-  if(shot.task==='facts'){bg='#1a1c2c';bg2='#2a3048';}
-  if(shot.task==='ending'){bg='#10121c';bg2='#1a1c2c';}
-
-  px(0,0,BW,BH,bg);
-  // 天空渐变（横向色带）
-  for(let i=0;i<12;i++){
-    b.globalAlpha=(1-i/12)*.5;
-    px(0,i*18,BW,18,bg2);
-    b.globalAlpha=1;
-  }
-  // 星空
-  for(let i=0;i<40;i++){
-    const sx=Math.round(rnd(i*3)*BW), sy=Math.round(rnd(i*3+1)*120);
-    const tw=.5+.5*Math.sin(t*2.2+rnd(i*3+2)*6.28);
-    b.globalAlpha=tw;
-    px(sx,sy,1,1,i%7===0?STYLE.accent:STYLE.ink);
-    b.globalAlpha=1;
-  }
-  // 地面
-  const gp=easeOut(seg(t,st,.8));
-  if(gp>0){
-    px(0,168,BW,58*gp,STYLE.accent2);
-    px(0,168+32*gp,BW,26*gp,'#257179');
-  }
-
-  // 内容区：按任务画（在 buffer 上，先不画文字，文字放大后画避免模糊）
-  // CRT 扫描线
-  b.fillStyle='rgba(0,0,0,.16)';
-  for(let y=0;y<BH;y+=3)b.fillRect(0,y,BW,1);
-
-  // 放大到主画布
-  ctx.imageSmoothingEnabled=false;
-  ctx.clearRect(0,0,W,H);
-  ctx.drawImage(buf,0,0,BW,BH,0,0,W,H);
-
-  // 底部标题条：必须在 drawImage 之后画，否则会被 buffer 覆盖
-  drawPixelContent(t, idx, shot, st);
-}
-
-function drawPixelContent(t, idx, shot, st){
-  // 底部标题条（高分辨率画在放大之后，避免过粗）
-  const p=easeOut(seg(t,st,.8));
-  if(p<=0)return;
-
-  ctx.fillStyle='rgba(10,11,18,.94)';
-  ctx.fillRect(0,812,W,88);
-  ctx.fillStyle=STYLE.accent2;
-  ctx.fillRect(0,809,W,3);
-
-  ctx.textAlign='center';ctx.textBaseline='middle';ctx.imageSmoothingEnabled=false;
-  const txt=shot.screen_text;
-  const n=Math.ceil(txt.length*p);
-  ctx.font='700 52px ui-monospace,"Courier New",monospace';
-  ctx.fillStyle=STYLE.accent;
-  ctx.fillText(txt.slice(0,n),W/2,846);
-
-  // 副标题：任务标签 + narration
-  const p2=easeOut(seg(t,st+.4,.6));
-  if(p2>0){
-    ctx.font='500 18px ui-monospace,"Courier New",monospace';
-    ctx.fillStyle=STYLE.ink;
-    const sub=(shot.narration||'').slice(0, Math.ceil((shot.narration||'').length*p2));
-    ctx.fillText(sub, W/2, 880);
-  }
-  // 镜头编号
-  ctx.font='700 16px ui-monospace,monospace';
-  ctx.fillStyle=STYLE.accent2;
-  ctx.textAlign='left';
-  ctx.fillText(shot.shot_id, 40, 60);
-  ctx.textAlign='center';
-}
-"""
-
-# ============================================================
-# 线稿渲染 JS（手抖线条 + 纸纹）
-# ============================================================
-
-_LINE_RENDER = r"""
-function wob(i,t,amp){return (Math.sin(i*2.13+t*7.3)+Math.sin(i*0.71-t*4.1)*.5)*amp;}
-
-function drawFrame(t){
-  t=clamp(t,0,DUR);
-  const {idx,shot,st}=currentShot(t);
-
-  // 纸底 + 纸纹（噪点加大，alpha 提高，让纸张质感可见）
-  ctx.fillStyle=STYLE.bg;
-  ctx.fillRect(0,0,W,H);
-  const pp=easeOut(seg(t,st,1.0));
-  ctx.fillStyle='rgba(120,110,95,'+(0.10*pp).toFixed(3)+')';
-  for(let i=0;i<3200;i++){
-    const nx=rnd(i*2)*W, ny=rnd(i*2+1)*H;
-    const ns=(rnd(i*3)>0.7?1.8:1.1);
-    ctx.fillRect(nx,ny,ns,ns);
-  }
-  // 四周暗角
-  const vg=ctx.createRadialGradient(W/2,H/2,H*.35,W/2,H/2,H*1.05);
-  vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(90,80,65,.03)');
-  ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);
-
-  // 顶部标题（手绘感）
-  const pt=easeOut(seg(t,st,.7));
-  if(pt>0){
-    drawTitle(shot.screen_text, W/2, H*0.32, 54, 800, STYLE.ink, pt, false);
-  }
-  // 任务编号
-  const pn=easeOut(seg(t,st+.3,.5));
-  if(pn>0){
-    ctx.font='700 16px ui-monospace,monospace';
-    ctx.fillStyle=STYLE.accent;
-    ctx.textAlign='center';
-    ctx.fillText(shot.shot_id, W/2, H*0.22);
-    ctx.textAlign='left';
-  }
-
-  // 手绘下划线（生长 + 明显手抖）
-  const pu=easeInOut(seg(t,st+.6,.8));
-  if(pu>0){
-    ctx.strokeStyle=STYLE.accent;
-    ctx.lineWidth=3.2;
-    ctx.lineCap='round';
-    ctx.beginPath();
-    const y=H*0.40, x0=W*0.28, x1=W*0.72;
-    const cx=x0+(x1-x0)*pu;
-    // 分段画，每段加手抖，模拟真实钢笔
-    ctx.moveTo(x0+wob(0,t,2.5), y+wob(1,t,2.5));
-    const segN=6;
-    for(let k=1;k<=segN;k++){
-      const q=k/segN*pu;
-      const sx=x0+(x1-x0)*Math.min(1,q);
-      ctx.lineTo(sx+wob(k*3,t,3.0), y+wob(k*3+1,t,3.0)+Math.sin(k)*1.2);
-    }
-    ctx.stroke();
-  }
-
-  // 内容：任务类型用不同图标/布局
-  drawLineContent(t, idx, shot, st);
-}
-
-function drawLineContent(t, idx, shot, st){
-  const p=easeOut(seg(t,st+1.0,.7));
-  if(p<=0)return;
-
-  ctx.textAlign='center';ctx.textBaseline='middle';
-  const y0=H*0.55;
-
-  if(shot.task==='cover'){
-    // hook
-    ctx.font='400 24px '+F;
-    ctx.fillStyle=STYLE.dim;
-    const hk=shot.narration.slice(0, Math.ceil(shot.narration.length*p));
-    ctx.fillText(hk, W/2, y0+30);
-  }else if(shot.task==='section'){
-    // 要点
-    ctx.font='400 22px '+F;
-    ctx.fillStyle=STYLE.dim;
-    const txt=(shot.narration||'').slice(0, Math.ceil((shot.narration||'').length*p));
-    ctx.fillText(txt, W/2, y0);
-  }else if(shot.task==='facts'){
-    // 事实点列表
-    DATA.facts.slice(0,3).forEach((f,i)=>{
-      const pi=easeOut(seg(t,st+1.0+i*.25,.5));
-      if(pi<=0)return;
-      const y=y0-40+i*70;
-      ctx.beginPath();
-      ctx.fillStyle=f.source?STYLE.accent:STYLE.accent2;
-      ctx.arc(W/2-200, y, 6, 0, 7);
-      ctx.fill();
-      ctx.font='500 22px '+F;
-      ctx.fillStyle=STYLE.ink;
-      ctx.textAlign='left';
-      ctx.fillText(f.claim.slice(0,Math.ceil(f.claim.length*pi)), W/2-180, y);
-      ctx.font='400 15px '+F;
-      ctx.fillStyle=f.source?STYLE.dim:STYLE.accent2;
-      ctx.fillText(f.source?('来源：'+f.source):'⚠ 无出处', W/2-180, y+28);
-      ctx.textAlign='center';
-    });
-  }else{
-    // ending: meta
-    ctx.font='400 20px '+F;
-    ctx.fillStyle=STYLE.dim;
-    ctx.fillText((DATA.meta||'').slice(0,Math.ceil((DATA.meta||'').length*p)), W/2, y0);
-  }
-}
-"""
-
-# ============================================================
-# HUD 渲染 JS（网格 + 扫描线 + 环形进度）
-# ============================================================
-
-_HUD_RENDER = r"""
-function drawFrame(t){
-  t=clamp(t,0,DUR);
-  const {idx,shot,st}=currentShot(t);
-
-  // 背景 + 网格
-  ctx.fillStyle=STYLE.bg;
-  ctx.fillRect(0,0,W,H);
-  const g=ctx.createRadialGradient(W/2,H*.45,60,W/2,H*.45,W*.6);
-  g.addColorStop(0,STYLE.bg2);g.addColorStop(1,STYLE.bg);
-  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
-
-  // 网格
-  const gp=easeOut(seg(t,st,.8));
-  ctx.strokeStyle='rgba(64,190,150,.08)';
-  ctx.lineWidth=1;
-  for(let x=0;x<=W;x+=40){
-    const h=H*gp;
-    ctx.beginPath();ctx.moveTo(x+.5,H/2-h/2);ctx.lineTo(x+.5,H/2+h/2);ctx.stroke();
-  }
-  for(let y=0;y<=H;y+=40){
-    const w=W*gp;
-    ctx.beginPath();ctx.moveTo(W/2-w/2,y+.5);ctx.lineTo(W/2+w/2,y+.5);ctx.stroke();
-  }
-
-  // 扫描线
-  const sy=((t*190)%(H+200))-100;
-  const sg=ctx.createLinearGradient(0,sy-90,0,sy+90);
-  sg.addColorStop(0,'rgba(34,211,238,0)');sg.addColorStop(.5,'rgba(34,211,238,.06)');sg.addColorStop(1,'rgba(34,211,238,0)');
-  ctx.fillStyle=sg;ctx.fillRect(0,sy-90,W,180);
-
-  drawHudContent(t, idx, shot, st);
-}
-
-function drawHudContent(t, idx, shot, st){
-  // 镜头编号
-  const pn=easeOut(seg(t,st,.5));
-  if(pn>0){
-    ctx.font='600 14px ui-monospace,monospace';
-    ctx.fillStyle=STYLE.accent;
-    ctx.textAlign='left';
-    ctx.fillText(shot.shot_id, 50, 60);
-  }
-
-  // 标题
-  const pt=easeOut(seg(t,st,.8));
-  if(pt>0){
-    drawTitle(shot.screen_text, W/2, H*0.42, 50, 800, STYLE.ink, pt, true);
-  }
-
-  // 任务标签
-  const pl=easeOut(seg(t,st+.3,.5));
-  if(pl>0){
-    ctx.font='600 14px ui-monospace,monospace';
-    ctx.fillStyle=STYLE.accent;
-    ctx.textAlign='center';
-    ctx.fillText(shot.task.toUpperCase(), W/2, H*0.28);
-  }
-
-  drawHudBody(t, idx, shot, st);
-}
-
-function drawHudBody(t, idx, shot, st){
-  const p=easeOut(seg(t,st+1.0,.7));
-  if(p<=0)return;
-
-  if(shot.task==='cover'){
-    // hook
-    ctx.font='400 22px '+F;
-    ctx.fillStyle=STYLE.dim;
-    ctx.textAlign='center';
-    ctx.fillText(shot.narration.slice(0,Math.ceil(shot.narration.length*p)), W/2, H*0.56);
-  }else if(shot.task==='section'){
-    ctx.font='400 20px '+F;
-    ctx.fillStyle=STYLE.dim;
-    ctx.textAlign='center';
-    ctx.fillText((shot.narration||'').slice(0,Math.ceil((shot.narration||'').length*p)), W/2, H*0.56);
-  }else if(shot.task==='facts'){
-    DATA.facts.slice(0,3).forEach((f,i)=>{
-      const pi=easeOut(seg(t,st+1.0+i*.25,.5));
-      if(pi<=0)return;
-      const y=H*0.5+i*80;
-      ctx.fillStyle=f.source?STYLE.accent:STYLE.accent2;
-      ctx.beginPath();ctx.arc(W/2-300,y,6,0,7);ctx.fill();
-      ctx.font='500 22px '+F;
-      ctx.fillStyle=STYLE.ink;
-      ctx.textAlign='left';
-      ctx.fillText(f.claim.slice(0,Math.ceil(f.claim.length*pi)), W/2-280, y);
-      ctx.font='400 14px ui-monospace,monospace';
-      ctx.fillStyle=f.source?STYLE.dim:STYLE.accent2;
-      ctx.fillText(f.source?('来源：'+f.source):'⚠ 无出处', W/2-280, y+28);
-      ctx.textAlign='center';
-    });
-  }else{
-    ctx.font='400 18px '+F;
-    ctx.fillStyle=STYLE.dim;
-    ctx.textAlign='center';
-    ctx.fillText((DATA.meta||'').slice(0,Math.ceil((DATA.meta||'').length*p)), W/2, H*0.56);
-  }
-}
-"""
-
-# 风格 id -> 渲染 JS
+# 风格 id -> 渲染 JS（先只做 HUD 这个"真动画"，验证方向后再铺开）
 _STYLE_RENDERERS = {
-    "pixel": _PIXEL_RENDER,
-    "line": _LINE_RENDER,
     "hud": _HUD_RENDER,
-    "geo": _LINE_RENDER,  # geo 暂用线稿渲染（白纸黑线），后续可独立
+    "line": _HUD_RENDER,
+    "pixel": _HUD_RENDER,
+    "geo": _HUD_RENDER,
 }
 
-# ============================================================
-# HTML 模板
-# ============================================================
 
 _TEMPLATE = r"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -465,7 +272,7 @@ _TEMPLATE = r"""<!DOCTYPE html>
   #bar button:hover{background:#262633;color:#fff}
   #prog{flex:1;height:4px;background:#232330;border-radius:2px;cursor:pointer;
     position:relative;overflow:hidden}
-  #fill{height:100%;width:0;background:linear-gradient(90deg,#6630f8,#9a7bff);border-radius:2px}
+  #fill{height:100%;width:0;background:linear-gradient(90deg,#22d3ee,#4ade80);border-radius:2px}
   #tc{min-width:110px;text-align:right;color:#5b5b70;font-size:11px}
   #styleTag{font-size:10px;letter-spacing:.08em;color:#8a8a99}
 </style>
@@ -480,20 +287,13 @@ _TEMPLATE = r"""<!DOCTYPE html>
   <div id="tc">00:00 / 00:00</div>
 </div>
 <script>
-const QS0 = new URLSearchParams(location.search);
 const STYLE = __STYLE__;
 const DATA = __DATA__;
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
 const W = 1600, H = 900;
-const F = STYLE.font === 'mono' ? 'ui-monospace,SFMono-Regular,Menlo,monospace'
-  : 'system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-
-__COMMON_JS__
 
 __RENDER_JS__
-
-__BOOT_JS__
 </script>
 </body>
 </html>
@@ -535,9 +335,7 @@ def render_video(
     page = page.replace("__STYLE_NAME__", style.name)
     page = page.replace("__STYLE__", _style_css(style))
     page = page.replace("__DATA__", json.dumps(data, ensure_ascii=False))
-    page = page.replace("__COMMON_JS__", _COMMON_JS)
     page = page.replace("__RENDER_JS__", render_js)
-    page = page.replace("__BOOT_JS__", _BOOT_JS)
     return page
 
 

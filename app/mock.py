@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .schemas import ContentBrief, Fact, Reflection, Section
 
 _PLATFORM_HINT = {
@@ -22,7 +24,16 @@ _WORD_LIMIT = {"wechat": 1200, "xiaohongshu": 550, "video": 800}
 
 
 def mock_brief(user_input: str, platform: str = "wechat", word_limit: int | None = None) -> ContentBrief:
-    topic = (user_input or "内容生产 Agent").strip().replace("\n", " ")[:40]
+    # 抓取来的素材带元信息头（标题：/来源：/发布：/原文链接：），
+    # 直接拿第一行当主题会变成「标题：GitHub - xxx」。跳过元信息找真正的主题。
+    topic = ""
+    for line in (user_input or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("标题：", "来源：", "发布：", "原文链接：", "<<<", ">>>")):
+            continue
+        topic = re.sub(r"\s+", " ", line)[:40]
+        break
+    topic = topic or "内容生产 Agent"
     kind = _PLATFORM_HINT.get(platform, "公众号长文")
     return ContentBrief(
         topic=topic,

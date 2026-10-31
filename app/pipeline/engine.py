@@ -32,7 +32,15 @@ async def run_pipeline(
     style: str = "auto",
     emit: Emitter,
     max_rounds: int = 2,
+    persona: str = "",
+    history_hint: str = "",
 ) -> dict[str, Any]:
+    """编排循环。
+
+    persona / history_hint：来自项目记忆与长期记忆。
+    传进来就把「人设」约束进 Writer、「历史结构表现」约束进 Reflector——
+    这样记忆才真的被用上，而不是只存在库里。
+    """
     started = time.time()
     await emit({"type": "stage", "stage": "plan", "label": "拆解输入，生成内容方案"})
 
@@ -53,14 +61,16 @@ async def run_pipeline(
         await emit({"type": "round_start", "round": rn})
 
         parts: list[str] = []
-        async for kind, text in compose_stream(llm, brief, hints):
+        async for kind, text in compose_stream(llm, brief, hints, persona=persona):
             parts.append(text)
             await emit({"type": "delta", "kind": kind, "text": text})
         body = "".join(parts)
         tokens += estimate_tokens(body)
 
         await emit({"type": "stage", "stage": "reflect", "round": rn, "label": f"第 {rn} 轮反思校验"})
-        refl = await reflect(llm, brief, body, round_no=rn, max_rounds=max_rounds)
+        refl = await reflect(
+            llm, brief, body, round_no=rn, max_rounds=max_rounds, history_hint=history_hint
+        )
         rounds.append(
             {
                 "round": rn,
@@ -117,5 +127,8 @@ async def run_pipeline(
         "model": llm.cfg.model,
         "mocked": llm.cfg.mock,
         "style": style,
+        # 结构标识 + 最终分：上层拿它写进长期记忆（数据回流）
+        "structure": "-".join(s.get("heading", "")[:6] for s in brief.model_dump()["outline"])[:120],
+        "final_score": best[0] if best[0] else (rounds[-1]["total"] if rounds else 0.0),
     }
     return result
