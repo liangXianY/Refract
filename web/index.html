@@ -130,8 +130,8 @@
       <label class="lb mt">参考链接<span class="opt">可选</span></label>
       <input id="vidUrl" class="inp" placeholder="https://..." autocomplete="off">
 
-      <button id="vidPlan" class="primary">出三套方案</button>
-      <p class="hint" id="vidHint">先给三套拍法，选定再生成成片。</p>
+      <button id="vidPlan" class="primary">出方案（3+1）</button>
+      <p class="hint" id="vidHint">出 4 套方案：三套风格库（DeepSeek）+ 一套 Opus 原创，选定再生成成片。</p>
 
       <div class="modelbox">
         <div class="mbt">模型</div>
@@ -141,7 +141,9 @@
 
     <div class="work">
       <div id="planList" class="plans">
-        <p class="ph">左边输入主题，点「出三套方案」。<br>三套的视觉语言会真的不一样，挑一个再生成。</p>
+        <p class="ph">左边输入主题，点「出方案（3+1）」。<br>
+        三套来自风格库（避开你上一次的风格），第 4 套由 Opus 完全原创——<br>
+        四张卡各配一帧预览，挑一个再生成。</p>
       </div>
       <div id="playerBox" hidden></div>
     </div>
