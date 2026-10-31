@@ -820,4 +820,10 @@ async def index() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html", media_type="text/html; charset=utf-8")
 
 
+@app.get("/runs")
+async def runs_page() -> FileResponse:
+    """生成记录页：复盘入口。"""
+    return FileResponse(WEB_DIR / "runs.html", media_type="text/html; charset=utf-8")
+
+
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")

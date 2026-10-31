@@ -53,6 +53,8 @@ def list_runs(data_dir: Path, limit: int = 30) -> list[dict]:
                 "model": r.get("model"),
                 "degraded": r.get("degraded"),
                 "gate_ok": (r.get("gate") or {}).get("ok"),
+                "word_count": r.get("word_count"),
+                "final_score": r.get("final_score"),
                 "artifact": r.get("artifact"),
             }
         )

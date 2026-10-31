@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>生成记录 · Refract</title>
+<style>
+:root{--bg:#fbfbf9;--surface:#fff;--ink:#111211;--ink2:#3f423f;--muted:#858783;--dim:#a8aaa5;
+  --line:#e6e6e2;--line2:#f0f0ec;--accent:#12a37f;--warn:#c98a1e;--err:#d1453b;
+  --mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+header{padding:26px 40px 18px;display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--line)}
+header h1{font-size:17px;letter-spacing:-.01em}
+header a{font-size:12px;color:var(--accent);text-decoration:none}
+header span{font-size:11px;color:var(--dim);margin-left:auto;font-family:var(--mono)}
+main{max-width:880px;width:100%;margin:0 auto;padding:22px 24px 60px;flex:1}
+.row{display:flex;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line2);align-items:baseline}
+.row:hover{background:#f6f7f5}
+.when{font-family:var(--mono);font-size:10.5px;color:var(--dim);flex:none;width:88px}
+.kind{font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 7px;border-radius:4px;flex:none;width:56px;text-align:center}
+.k-article{background:#e9f7f2;color:#0d7a5f}
+.k-video{background:#eaf1fb;color:#24487a}
+.k-chat{background:var(--line2);color:var(--muted)}
+.k-task{background:var(--line2);color:var(--muted)}
+.what{flex:1;min-width:0}
+.what b{font-size:13px;font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.what span{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+.meta{font-size:10.5px;color:var(--muted);font-family:var(--mono);flex:none;text-align:right}
+.meta a{color:var(--accent);text-decoration:none;margin-left:8px}
+.empty{padding:60px 0;text-align:center;color:var(--dim);font-size:13px}
+footer{padding:16px 40px;border-top:1px solid var(--line);font-size:10.5px;color:var(--dim);
+  font-family:var(--mono);display:flex;justify-content:space-between}
+</style>
+</head>
+<body>
+<header><h1>生成记录</h1><a href="/">← 回到工作台</a><span id="sum"></span></header>
+<main id="list"><p class="empty">加载中…</p></main>
+<footer><span>每次生成落一份 JSON：输入 / 方案 / 每版闸门 / 失败原因 / 耗时</span><span>data/runs/</span></footer>
+<script>
+const KIND = {article:'文章', video:'视频', chat:'对话', chitchat:'闲聊', task:'任务'};
+async function load() {
+  try {
+    const d = await (await fetch('/api/runs?limit=100')).json();
+    const runs = d.runs || [];
+    document.getElementById('sum').textContent = `共 ${runs.length} 条`;
+    if (!runs.length) { list.innerHTML = '<p class="empty">还没有生成记录</p>'; return; }
+    list.innerHTML = runs.map(x => {
+      const k = (x.kind || 'task').toLowerCase();
+      const gate = k === 'video' ? (x.gate_ok ? ' · 闸门过' : ' · 未过闸') : '';
+      const wc = x.word_count ? ` · ${x.word_count}字` : '';
+      const sc = x.final_score ? ` · ${x.final_score}分` : '';
+      const prov = (x.provider && x.provider !== 'rule') ? x.provider : '规则/模板';
+      const link = x.artifact ? `<a href="${x.artifact}" target="_blank">打开</a>` : '';
+      const dl = k === 'article' && x.artifact
+        ? `<a href="/api/articles/${x.artifact.split('/').pop()}/md">md</a>` : '';
+      return `<div class="row">
+        <span class="when">${esc(String(x.finished_at || '').slice(5, 16))}</span>
+        <span class="kind k-${k}">${KIND[k] || k}</span>
+        <div class="what"><b>${esc(x.title || '（无标题）')}</b>
+          <span>${esc(prov)} · ${x.model || '-'} · ${((x.elapsed_ms || 0) / 1000).toFixed(0)}s${wc}${sc}${gate}</span></div>
+        <span class="meta">${x.degraded ? '<i style="color:var(--warn)">降级</i>' : ''}${dl}${link}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    list.innerHTML = `<p class="empty">加载失败：${esc(e.message)}</p>`;
+  }
+}
+function esc(s) { return String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+load();
+</script>
+</body>
+</html>
