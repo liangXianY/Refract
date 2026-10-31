@@ -23,46 +23,107 @@ def _inline_md(text: str) -> str:
     return text
 
 
+_SEP_RE = None  # 惰性编译：模块顶部 import re 已有
+
+
+def _is_table_sep(line: str) -> bool:
+    """|---|---| 形式的分隔行：整行只由 -、|、: 和空格组成，且至少有一个 -。"""
+    core = line.strip()
+    return bool(core.strip("|-")) is False and "-" in core and "|" in core
+
+
+def _render_table(rows: list[list[str]]) -> str:
+    head, *body = rows
+    th = "".join(f"<th>{_inline_md(c)}</th>" for c in head)
+    trs = "".join("<tr>" + "".join(f"<td>{_inline_md(c)}</td>" for c in r) + "</tr>" for r in body)
+    return f"<table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>"
+
+
 def md_to_html(md: str) -> str:
-    """够用就行的 Markdown 渲染。不引第三方库，减少攻击面。"""
+    """够用就行的 Markdown 渲染。不引第三方库，减少攻击面。
+
+    支持表格（| 语法）和配图占位（![说明](prompt:...)）。
+    配图占位不是偷懒——真图片要接图像 API（花钱），先把「哪张图、放哪、
+    生成提示词」落进产物，接上生成器后同一个占位直接换成 <img>。
+    """
     out: list[str] = []
     list_open = False
-    for raw in md.splitlines():
-        line = raw.rstrip()
+    table_buf: list[list[str]] = []
+    lines = md.splitlines()
+    i = 0
+
+    def close_list():
+        nonlocal list_open
+        if list_open:
+            out.append("</ul>")
+            list_open = False
+
+    def flush_table():
+        nonlocal table_buf
+        if table_buf:
+            out.append(_render_table(table_buf))
+            table_buf = []
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+        i += 1
         if not line:
-            if list_open:
-                out.append("</ul>")
-                list_open = False
+            close_list()
+            flush_table()
             continue
+
+        # 表格：| a | b | 行 + 下一行是 |---|---| 分隔
+        if line.lstrip().startswith("|") and i < len(lines) and _is_table_sep(lines[i]):
+            close_list()
+            header = [c.strip() for c in line.strip().strip("|").split("|")]
+            i += 1  # 跳过分隔行
+            rows = [header]
+            while i < len(lines) and lines[i].lstrip().startswith("|"):
+                rows.append([c.strip() for c in lines[i].strip().strip("|").split("|")])
+                i += 1
+            if len(rows) >= 2 and any(len(r) >= 2 for r in rows):
+                table_buf = rows
+                flush_table()
+                continue
+
+        # 配图占位：![说明](prompt: 生成提示词)
+        m_img = re.match(r"^!\[([^\]]*)\]\((prompt:.+)\)\s*$", line.strip())
+        if m_img:
+            close_list()
+            flush_table()
+            out.append(
+                '<figure class="imgslot"><figcaption>🖼 配图位：'
+                + _inline_md(m_img.group(1))
+                + '</figcaption><div class="imgprompt">生成提示词：'
+                + _inline_md(m_img.group(2)[7:])
+                + "</div></figure>"
+            )
+            continue
+
         if line.startswith("### "):
-            if list_open:
-                out.append("</ul>")
-                list_open = False
+            close_list(); flush_table()
             out.append(f"<h4>{_inline_md(line[4:])}</h4>")
         elif line.startswith("## "):
-            if list_open:
-                out.append("</ul>")
-                list_open = False
+            close_list(); flush_table()
             out.append(f"<h3>{_inline_md(line[3:])}</h3>")
         elif line.startswith("# "):
-            if list_open:
-                out.append("</ul>")
-                list_open = False
+            close_list(); flush_table()
             out.append(f"<h2>{_inline_md(line[2:])}</h2>")
         elif line.lstrip().startswith(("- ", "* ")):
+            flush_table()
             if not list_open:
                 out.append("<ul>")
                 list_open = True
             out.append(f"<li>{_inline_md(line.lstrip()[2:])}</li>")
         elif line.startswith("> "):
+            close_list(); flush_table()
             out.append(f"<blockquote>{_inline_md(line[2:])}</blockquote>")
         else:
-            if list_open:
-                out.append("</ul>")
-                list_open = False
+            close_list()
+            flush_table()
             out.append(f"<p>{_inline_md(line)}</p>")
-    if list_open:
-        out.append("</ul>")
+    close_list()
+    flush_table()
     return "\n".join(out)
 
 
@@ -472,6 +533,16 @@ def render_article_page(brief: ContentBrief, body: str, meta_line: str) -> str:
   .body blockquote{{margin:20px 0;padding:12px 18px;border-left:3px solid #12a37f;
     background:#f6f8f7;border-radius:0 8px 8px 0;color:#3f423f}}
   .body hr{{border:0;border-top:1px solid #e6e6e2;margin:36px auto;width:64px}}
+  .body table{{width:100%;border-collapse:collapse;margin:20px 0 26px;font-size:13.5px}}
+  .body th{{text-align:left;background:#f2f4f2;padding:9px 12px;font-weight:700;
+    border-bottom:2px solid #12a37f;white-space:nowrap}}
+  .body td{{padding:9px 12px;border-bottom:1px solid #eeeee9;vertical-align:top}}
+  .body tr:hover td{{background:#fafbfa}}
+  .body figure.imgslot{{margin:24px 0;padding:14px 16px;border:1px dashed #c8d6d0;
+    border-radius:10px;background:#f8faf9}}
+  .body figure.imgslot figcaption{{font-size:13px;font-weight:600;color:#0d7a5f;margin-bottom:6px}}
+  .body figure.imgslot .imgprompt{{font-size:11.5px;color:#858783;font-family:ui-monospace,Consolas,monospace;
+    line-height:1.7;word-break:break-all}}
   footer{{margin-top:52px;padding-top:16px;border-top:1px solid #e6e6e2;
     font-size:11px;color:#a8aaa5;font-family:ui-monospace,Consolas,monospace}}
 </style></head><body><main>
