@@ -1,0 +1,35 @@
+[Unit]
+Description=Content Agent (Plan-Execute-Reflect)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/app/content-agent
+
+# API Key 走 EnvironmentFile，权限 600，不进仓库
+EnvironmentFile=-/home/ubuntu/app/content-agent/.env
+Environment=DATA_DIR=/home/ubuntu/app/content-agent/data
+Environment=LLM_MOCK=1
+Environment=MAX_ROUNDS=2
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/ubuntu/app/content-agent/.venv/bin/python -m uvicorn app.main:app \
+    --host 0.0.0.0 --port 8080 --workers 1 --log-level warning
+
+Restart=always
+RestartSec=3
+
+# 内存红线：机器只有 1.9G，应用被 OOM 杀掉好过拖死整机（ssh 也会断）
+MemoryMax=700M
+MemoryHigh=560M
+
+# 基础加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/app/content-agent/data
+
+[Install]
+WantedBy=multi-user.target
