@@ -24,6 +24,7 @@ from .config import settings
 from .llm import LLMClient
 from .pipeline.engine import run_pipeline
 from .pipeline.renderer import save_artifact
+from .pipeline.video import save_video, styles_meta
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -35,9 +36,16 @@ class GenerateIn(BaseModel):
     input: str = Field(min_length=2, max_length=4000)
     platform: str = Field(default="wechat", pattern="^(wechat|xiaohongshu|video)$")
     # 视频风格：auto 表示让模型按内容自己挑
-    style: str = Field(default="auto", pattern="^(auto|minimal|apple|editorial|tech|sketch)$")
+    style: str = Field(default="auto", pattern="^(auto|minimal|apple|editorial|tech|sketch|hud|line|pixel|geo)$")
     # 篇幅档位
     words: str = Field(default="medium", pattern="^(short|medium|long)$")
+
+
+class VideoIn(BaseModel):
+    input: str = Field(min_length=2, max_length=4000)
+    platform: str = Field(default="video", pattern="^(wechat|xiaohongshu|video)$")
+    # 视频风格：直接从风格库选，空则用默认
+    style: str = Field(default="hud")
 
 
 class TaskState:
@@ -168,6 +176,58 @@ async def task_detail(task_id: str) -> dict[str, Any]:
     if task is None:
         raise HTTPException(404, "task not found")
     return {"id": task.id, "status": task.status, "result": task.result}
+
+
+@app.get("/api/styles")
+async def styles() -> dict[str, Any]:
+    """风格清单，供前端「视频风格选择器」使用。"""
+    return {"styles": styles_meta()}
+
+
+@app.post("/api/video")
+async def video(payload: VideoIn) -> dict[str, str]:
+    """视频生成：输入 → 分镜 → 指定风格的动画视频页。
+
+    独立于 /api/generate（那条是文案主链），这是视频主模块的入口。
+    暂不走 DeepSeek，纯规则分镜 + 本地 canvas 渲染，不产生 API 费用。
+    """
+    if not settings.is_ready:
+        raise HTTPException(400, "未配置 DEEPSEEK_API_KEY，且未开启 LLM_MOCK")
+
+    task_id = uuid.uuid4().hex[:12]
+    # 用 mock brief 生成（不调 API）：从输入文本提取标题/大纲
+    from .pipeline.brief import plan
+    from .schemas import ContentBrief
+
+    async def _video_run() -> None:
+        try:
+            brief = await plan(llm, payload.input, payload.platform, "medium")
+            meta = f"{brief.platform} · {payload.style} 风格 · mock"
+            path = save_video(brief, "", task_id, settings.data_dir, payload.style, meta)
+            TASKS[task_id] = TaskState(task_id)
+            t = TASKS[task_id]
+            t.status = "done"
+            t.result = {"brief": brief.model_dump(), "video_url": f"/v/{task_id}"}
+            await t.push({"type": "done", "url": f"/v/{task_id}"})
+        except Exception as exc:
+            t = TASKS.setdefault(task_id, TaskState(task_id))
+            t.status = "failed"
+            await t.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+
+    TASKS[task_id] = TaskState(task_id)
+    asyncio.create_task(_video_run())
+    return {"task_id": task_id}
+
+
+@app.get("/v/{artifact_id}")
+async def video_artifact(artifact_id: str) -> FileResponse:
+    """视频产物。"""
+    if not artifact_id.isalnum():
+        raise HTTPException(400, "bad id")
+    path = settings.data_dir / "videos" / f"{artifact_id}.html"
+    if not path.exists():
+        raise HTTPException(404, "video not found")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
 
 
 @app.get("/")
