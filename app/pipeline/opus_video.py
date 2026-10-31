@@ -95,6 +95,8 @@ class VideoResult:
     degraded: bool = False
     # 每一版都留痕：复盘时最想知道的是「第一次为什么没过」，只留最后一次等于没留
     history: list[dict] = field(default_factory=list)
+    # 每一版的完整 HTML——对比「被拦下的版本」和「过闸的版本」差在哪，全靠它
+    attempt_htmls: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 闸门
@@ -297,6 +299,7 @@ async def generate(
                 stats={"chars": 0},
             )
             history.append({"attempt": attempts, "chars": 0, "ok": False, "failures": gate.failures, "stats": gate.stats})
+            attempt_htmls.append(html)
             break
         gate = check(html, brief, plan.duration)
         history.append(
@@ -308,6 +311,7 @@ async def generate(
                 "stats": gate.stats,
             }
         )
+        attempt_htmls.append(html)
         if gate.ok:
             break
 
@@ -320,6 +324,7 @@ async def generate(
         attempts=attempts,
         degraded=False,
         history=history,
+        attempt_htmls=attempt_htmls,
     )
 
 

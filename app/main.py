@@ -699,6 +699,12 @@ async def _run_video(
                 }
             )
             html = opus_video.wrap_meta(res.html, plan_obj, res)
+            # 每一版都落盘：被拦下的版本是最有复盘价值的东西
+            for i, h in enumerate(res.attempt_htmls, 1):
+                try:
+                    (settings.data_dir / "videos" / f"{task_id}-a{i}.html").write_text(h, encoding="utf-8")
+                except OSError:
+                    pass
             degraded = not res.gate.ok
             if degraded:
                 # 闸门没过：宁可给模板片，也不给空白页
@@ -798,8 +804,10 @@ async def video(payload: VideoIn) -> dict[str, str]:
 
 @app.get("/v/{artifact_id}")
 async def video_artifact(artifact_id: str) -> FileResponse:
-    """视频产物。"""
-    if not artifact_id.isalnum():
+    """视频产物。task_id 或 task_id-a2（某一次被拦下的尝试稿）。"""
+    import re as _re
+
+    if not _re.fullmatch(r"[a-z0-9]+(-a\d+)?", artifact_id):
         raise HTTPException(400, "bad id")
     path = settings.data_dir / "videos" / f"{artifact_id}.html"
     if not path.exists():
