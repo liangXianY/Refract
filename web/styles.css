@@ -98,7 +98,7 @@ textarea{
   border:1px solid var(--line);background:var(--bg);color:var(--ink);
   font-size:13px;line-height:1.65;font-family:inherit;outline:none;transition:.18s;
 }
-textarea:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 3px var(--accent-soft)}
+textarea:focus{border-color:var(--accent);background:#fff;outline:none}
 textarea::placeholder{color:var(--muted)}
 
 .chips{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
@@ -303,6 +303,9 @@ footer{
 .ce-tips button:hover{border-color:var(--accent);color:var(--accent)}
 
 .msg{display:flex;gap:13px;margin-bottom:24px;animation:fadeUp .32s ease}
+.msg.user{flex-direction:row-reverse}
+.msg.user .body{background:var(--accent-soft);padding:9px 14px;border-radius:12px 12px 3px 12px;
+  max-width:78%;width:fit-content}
 .msg .av{width:27px;height:27px;border-radius:8px;flex:none;display:grid;place-items:center;
   font-size:11px;font-weight:800}
 .msg.user .av{background:var(--line2);color:var(--ink2)}
@@ -500,3 +503,7 @@ footer{
 .bnote{margin-bottom:9px;padding:7px 10px;border-radius:7px;background:var(--accent-soft);
   font-size:10.5px;color:var(--ink2);line-height:1.7}
 .bnote b{color:var(--accent)}
+
+
+/* 用户消息气泡右对齐后，AI 侧正文宽度照旧；工具卡等仍在 AI 侧 */
+.msg.ai .body{max-width:100%}

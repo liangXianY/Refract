@@ -47,15 +47,26 @@ async function runTask(payload, onEvent, path = '/api/generate') {
 
   return new Promise((resolve, reject) => {
     const es = new EventSource(`/api/tasks/${task_id}/events`);
+    // 看门狗：90 秒没有任何事件就判卡死，主动断开，别让光标永远闪
+    let lastBeat = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastBeat > 90000) {
+        clearInterval(watchdog);
+        es.close();
+        reject(new Error('任务 90 秒没有响应，已断开（可重试）'));
+      }
+    }, 5000);
+    const finish = (fn, arg) => { clearInterval(watchdog); es.close(); fn(arg); };
     es.onmessage = (m) => {
+      lastBeat = Date.now();
       let ev;
       try { ev = JSON.parse(m.data); } catch { return; }
       onEvent?.(ev);
-      if (ev.type === 'done') { es.close(); resolve(ev); }
-      if (ev.type === 'error') { es.close(); reject(new Error(ev.message)); }
+      if (ev.type === 'done') finish(resolve, ev);
+      if (ev.type === 'error') finish(reject, new Error(ev.message));
     };
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) reject(new Error('连接中断'));
+      if (es.readyState === EventSource.CLOSED) finish(reject, new Error('连接中断'));
     };
   });
 }
@@ -288,8 +299,9 @@ async function sendChat(text) {
     $('chatHint').textContent = '主 Agent 待命';
   } catch (e) {
     mdBox.hidden = false;
-    mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
-    $('chatHint').textContent = '出错了';
+    if (raw) mdBox.innerHTML = renderMd(raw, false);   // 收到多少显示多少，光标必须摘掉
+    else mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
+    $('chatHint').textContent = '出错了：' + e.message;
   } finally {
     chatting = false;
     $('chatSend').disabled = false;
