@@ -116,7 +116,11 @@ async def health() -> dict[str, Any]:
         "model": settings.model,
         "ready": settings.is_ready,
         "tasks": len(TASKS),
-        "routes": {r: (d["active"] or {}).get("model") for r, d in registry.snapshot()["routes"].items()},
+        # 带上 provider key：text 和 video 可能都是 deepseek-flash，只报模型名分不清谁是谁
+        "routes": {
+            r: (f"{d['active']['key']}:{d['active']['model']}" if d["active"] else None)
+            for r, d in registry.snapshot()["routes"].items()
+        },
     }
 
 

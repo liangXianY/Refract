@@ -126,6 +126,50 @@ return "pass"
 而这类 motion graphics 本质是前端动画，输出网页反而是更好的体验：
 秒开、可暂停、可拖进度、清晰度无损、体积几十 KB。要发平台时再离线导出 mp4。
 
+### 9. 不同活派给不同模型，且能运行时切换
+
+不是所有活都值得用最贵的模型。这里按**用途**路由，而不是全局一个模型：
+
+| 用途 | 干什么 | 模型 | 理由 |
+|---|---|---|---|
+| `text` | 拆方案 / 写正文 / 打分 / 出三套视频方案 | DeepSeek flash | 调用频次高、输出短，要快 |
+| `video` | 写整份 Canvas 动画 HTML | Opus 5.5（中转） | 一次几百行代码 + 视觉理解，弱模型写不完整 |
+
+实现上是一张可运行时修改的路由表（`app/models.py`），落盘到 `data/models.json`：
+
+```
+GET  /api/models          看当前哪类活用哪个模型、凭据有没有配好
+POST /api/models/route    改路由，立即生效，不重启进程
+```
+
+**跨协议**是这里的真问题。DeepSeek 走 OpenAI 的 `/chat/completions`（Bearer），
+Claude 走 Anthropic 的 `/v1/messages`（system 是顶层字段、没有 `response_format`、
+截断信号是 `stop_reason=max_tokens` 而非 `finish_reason=length`）。
+两套协议封在同一个 `LLMClient` 后面，调用方只写 `route="video"`。
+
+**降级链是硬要求，不是优化**：`video` 默认 `[cctq, deepseek-anthropic]`。
+中转站挂了或没配 key，自动落到 DeepSeek 的 Anthropic 兼容端点——
+协议一致，接上就能跑，只是模型弱一些。宁可出一版差的，不能整条链路断掉。
+
+### 10. 视频：先出三套方案，再写代码
+
+一次成片是重投入：几百行渲染代码，方向选错全废，重跑要一两分钟。
+所以先花几秒出三套**视觉语言真的不同**的方案（不是同款换配色），
+人挑一个再进成片。这一步的成本接近零，省下的是整份重做。
+
+成片交给 `video` 路由的模型直接写整份 HTML，然后过四道闸门：
+
+| 闸 | 查什么 | 挡掉的翻车 |
+|---|---|---|
+| 完整性 | 结尾有 `</html>` | **被 max_tokens 截断**：代码很漂亮，浏览器打开一片黑且不报错 |
+| 能播 | 有 canvas + 动画循环 + 零外链 | 依赖 CDN，断网就白屏 |
+| 有字 | 画布上的中文字 ≥ 40 | 「一个字都没有」的纯几何动画 |
+| 在动 | 时间轴被真实使用 | 本质是动态 PPT 的单帧排版 |
+
+不过闸门就带着失败原因重修一次，再不过**降级到模板渲染**。
+降级不是失败兜底，是质量下限：宁可给 70 分的模板片，也不给 0 分的空白页。
+
+
 ---
 
 ## 快速开始
@@ -162,20 +206,29 @@ python tests/preview.py                        # 离线生成 demo 产物，看�
 
 ```
 app/
-  config.py          配置，全部走环境变量
+  config.py          运行模式与数据目录（模型选择不在这里）
+  models.py          模型路由表：用途 → provider 链，可运行时切换
   schemas.py         ContentBrief 等契约
-  llm.py             DeepSeek 客户端：结构化 + 流式 + 宽松 JSON 解析
+  llm.py             双协议客户端：OpenAI 兼容 + Anthropic，结构化/流式/长文本
   mock.py            Mock 数据源（结构与真实调用完全一致）
+  agents/            子 Agent 分工：intent / orchestrator / researcher / writer / director
   pipeline/
     brief.py         Planner
     compose.py       Executor
     reflect.py       Reflector（三层校验 + 三档决策）
     engine.py        plan-execute-reflect 循环
-    renderer.py      产物渲染（自包含动画 HTML）
-  main.py            FastAPI：SSE、任务、产物路由
+    fetch.py         链接抓取（trafilatura + SSRF 防护）
+    memory.py        三层记忆：会话 / 项目 / 长期结构
+    director.py      三套视频方案推荐
+    opus_video.py    整份动画 HTML 生成 + 四道闸门
+    video.py         模板渲染（降级路径）
+    renderer.py      文章产物渲染
+  main.py            FastAPI：SSE、任务、产物、模型路由
+mcp_server.py        7 个 MCP tool（抓取/文案/分镜/渲染/记忆）
 web/                 前端（原生 JS，无构建步骤）
 tests/
   smoke.py           端到端冒烟
+  video_probe.py     视频链路真实模型探针（出方案 → 成片 → 闸门）
   preview.py         离线产物预览
 ```
 
@@ -185,23 +238,33 @@ tests/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/generate` | `{input, platform}` → `{task_id}` |
+| POST | `/api/generate` | `{input, url?, platform}` → `{task_id}` |
 | GET | `/api/tasks/{id}/events` | SSE 事件流 |
-| GET | `/r/{id}` | 产物页 |
-| GET | `/api/health` | 健康检查 + 当前模式 |
+| GET | `/r/{id}` | 文章产物页 |
+| GET | `/api/health` | 健康检查 + 当前模式 + 各用途用的模型 |
+| GET | `/api/models` | 模型路由快照（含凭据是否配好、是否降级） |
+| POST | `/api/models/route` | `{route, chain}` 运行时切换模型 |
+| POST | `/api/fetch` | 抓链接预览正文 |
+| POST | `/api/intent` | 只识别意图不执行 |
+| POST | `/api/video/plans` | 出三套视频方案 |
+| POST | `/api/video/render` | `{input, plan}` → `{task_id}`，按方案成片 |
+| GET | `/v/{id}` | 视频产物页 |
+| GET/POST/DELETE | `/api/memory` | 项目记忆读写 |
 
-SSE 事件类型：`stage / brief / round_start / delta / reflection / note / done / error`
+SSE 事件类型：`stage / brief / round_start / delta / reflection / note / gate / done / error`
 
 `delta` 分 `kind=reasoning`（推理过程，前端显示"思考中"）和 `kind=content`（正文，流式渲染）。
+`gate` 是视频闸门结果：`{ok, failures, stats, attempts, model}`。
 
 ---
 
 ## 已知限制
 
 - 任务状态在进程内存里。单机演示够用，多实例要换 Redis Stream（接口不用动）
-- 链接解析还没做（`P1` 剩余部分），当前只接受文本输入
+- 视频闸门只保证「不是废片」，不保证好看；质量上限仍取决于视频模型
 - 反思的评分器没有用标注样本校准，L3 分数只能做相对比较
 - 产物页是 16:9 横屏，竖屏版需要重排布局
+- 中转站的模型名需与账号可用模型一致（`CCTQ_MODEL`，默认 `claude-opus-5-5`）
 
 ---
 
