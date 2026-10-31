@@ -44,7 +44,11 @@ SYSTEM = """你是 Motion Graphics 工程师，用 Canvas 2D 写一条中文演�
 - 用一个 <canvas> + 一个 <script>，不要引库
 - **整份代码控制在 450 行以内，必须写完，最后一个字符是 </html>**。
   写不完宁可砍效果：一个能播的 400 行比一个播不了的 800 行有用得多
-- 把总时长写到 window.__DUR = <给定时长>（数值即可），音效引擎按它排节拍
+- 把总时长写到 window.__DUR = <给定时长>（数值即可）
+- 代码最后输出音效表：window.__SFX = [{t: 2.5, type: "whoosh"}, ...]。
+  t 必须抄自画面关键动作的时间点（元素登场用 pop、转场/大幅移动用 whoosh、
+  强调用 hit、收尾用 chord），8-14 个为宜，均匀但优先对齐大动作。
+  引擎按这张表触发声音——表写得不准，声音就会和画面打架
 
 工艺规则（对齐 xilo-opus-video 的制作规范）：
 - 随机数必须用固定种子的伪随机（如 function rnd(i){return (Math.sin(i*127.1+311.7)*43758.5453)%1;}），
@@ -363,45 +367,74 @@ async def generate(
     )
 
 
-# 音效引擎：WebAudio 程序化合成，不用任何音频素材（版权干净、体积为零）。
-# 浏览器禁止自动播放声音，所以默认静音，观众点一下才响。
-# 节拍按 window.__DUR（Opus 被要求写入）八等分：每拍一个轻 tick，
-# 每 6 拍一个 whoosh，最后一拍上扬和弦。__DUR 缺失时按 24s 兜底。
+# 音效引擎 v2：声画同步版。
+# 之前的固定节拍版（每 DUR/8 一声）被用户否决——tick 落在画面哪个动作上全靠运气，
+# 时间对齐不是内容对齐，听起来就是随机噪声。
+# 现在的做法来自 xilo：Opus 写画面时把关键动作时间点输出成 window.__SFX 表，
+# 引擎按表触发。没有表的片子直接静音——宁缺毋滥。
 _AUDIO_JS = """
 (function(){
-  var DUR = (window.__DUR && window.__DUR > 5) ? window.__DUR : 24;
-  var on = false, ac = null, timer = null, n = 0;
+  var SFX = window.__SFX, DUR = window.__DUR;
+  if (!SFX || !SFX.length || !DUR || DUR < 5) return;  // 没表就不出按钮，宁缺毋滥
+  SFX = SFX.filter(function(e){ return e && typeof e.t === 'number' && e.t >= 0 && e.t < DUR; })
+           .sort(function(a, b){ return a.t - b.t; });
+  if (!SFX.length) return;
+
+  var ac = null, on = false, t0 = 0, raf = null, prev = 0;
   function env(g, t, a, d, v){ g.gain.setValueAtTime(0.0001, t);
     g.gain.linearRampToValueAtTime(v, t + a);
     g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
-  function tick(t){ var o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'triangle'; o.frequency.value = 660 + (n % 3) * 180;
-    env(g, t, 0.005, 0.1, 0.05); o.connect(g).connect(ac.destination);
-    o.start(t); o.stop(t + 0.14); }
-  function whoosh(t){ var len = Math.floor(ac.sampleRate * 0.45),
-    b = ac.createBuffer(1, len, ac.sampleRate), d = b.getChannelData(0);
-    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
-    var s = ac.createBufferSource(); s.buffer = b;
-    var f = ac.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
-    f.frequency.setValueAtTime(280, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.38);
-    var g = ac.createGain(); env(g, t, 0.02, 0.42, 0.09);
-    s.connect(f).connect(g).connect(ac.destination); s.start(t); }
-  function chord(t){ [261.6, 329.6, 392.0].forEach(function(fq, i){
-    var o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine';
-    o.frequency.value = fq; env(g, t + i * 0.05, 0.03, 1.3, 0.045);
-    o.connect(g).connect(ac.destination); o.start(t + i * 0.05); o.stop(t + 1.5); }); }
-  function beat(){ var t = ac.currentTime + 0.02; n++;
-    if (n === 1 || n % 6 === 4) whoosh(t);
-    else if (n % 6 === 0) chord(t); else tick(t); }
+  function play(type, t){
+    if (type === 'whoosh'){
+      var len = Math.floor(ac.sampleRate * 0.45), b = ac.createBuffer(1, len, ac.sampleRate),
+          d = b.getChannelData(0);
+      for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
+      var s = ac.createBufferSource(); s.buffer = b;
+      var f = ac.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
+      f.frequency.setValueAtTime(280, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.38);
+      var g = ac.createGain(); env(g, t, 0.02, 0.42, 0.09);
+      s.connect(f).connect(g).connect(ac.destination); s.start(t);
+    } else if (type === 'pop'){
+      var o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine';
+      o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(620, t + 0.08);
+      env(g, t, 0.004, 0.09, 0.07); o.connect(g).connect(ac.destination);
+      o.start(t); o.stop(t + 0.12);
+    } else if (type === 'hit'){
+      var o2 = ac.createOscillator(), g2 = ac.createGain(); o2.type = 'sine';
+      o2.frequency.setValueAtTime(150, t); o2.frequency.exponentialRampToValueAtTime(55, t + 0.12);
+      env(g2, t, 0.003, 0.16, 0.12); o2.connect(g2).connect(ac.destination);
+      o2.start(t); o2.stop(t + 0.2);
+    } else if (type === 'chord'){
+      [261.6, 329.6, 392.0].forEach(function(fq, i){
+        var o3 = ac.createOscillator(), g3 = ac.createGain(); o3.type = 'sine';
+        o3.frequency.value = fq; env(g3, t + i * 0.05, 0.03, 1.3, 0.045);
+        o3.connect(g3).connect(ac.destination); o3.start(t + i * 0.05); o3.stop(t + 1.5); });
+    } else {  // tick 默认
+      var o4 = ac.createOscillator(), g4 = ac.createGain(); o4.type = 'triangle';
+      o4.frequency.value = 660 + Math.random() * 240;
+      env(g4, t, 0.004, 0.08, 0.05); o4.connect(g4).connect(ac.destination);
+      o4.start(t); o4.stop(t + 0.11);
+    }
+  }
+  function frame(){
+    if (!on) return;
+    var el = ((performance.now() - t0) / 1000) % DUR;
+    for (var i = 0; i < SFX.length; i++){
+      var e = SFX[i];
+      if ((prev < e.t && el >= e.t) || (el < prev && e.t >= prev)) play(e.type, ac.currentTime + 0.02);
+    }
+    prev = el;
+    raf = requestAnimationFrame(frame);
+  }
   var b = document.createElement('button');
-  b.textContent = '🔇 音效';
+  b.textContent = '\ud83d\udd07 音效';
   b.style.cssText = 'position:fixed;right:14px;bottom:44px;z-index:9;font:500 12px ui-monospace,Menlo,monospace;color:#7b8b99;background:rgba(8,12,16,.72);border:1px solid #1e2a33;border-radius:6px;padding:5px 10px;cursor:pointer;backdrop-filter:blur(6px)';
   b.onclick = function(){
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     on = !on;
-    if (on) { b.textContent = '🔊 音效中'; ac.resume(); beat();
-      timer = setInterval(beat, DUR * 1000 / 8); }
-    else { b.textContent = '🔇 音效'; ac.suspend(); clearInterval(timer); }
+    if (on) { b.textContent = '\ud83d\udd0a 音效中'; ac.resume();
+      t0 = performance.now(); prev = 0; raf = requestAnimationFrame(frame); }
+    else { b.textContent = '\ud83d\udd07 音效'; if (raf) cancelAnimationFrame(raf); }
   };
   document.body.appendChild(b);
 })();
