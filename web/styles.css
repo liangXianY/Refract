@@ -522,3 +522,5 @@ footer{
 .tstat:empty{width:8px;height:8px;border-radius:50%;background:var(--line)}
 .pstage.slim{min-height:120px;gap:10px}
 .pstage.slim span{font-size:12px;color:var(--muted);font-family:var(--mono)}
+.vframe{margin-top:12px}
+.vframe iframe{width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:10px;background:#000;display:block}

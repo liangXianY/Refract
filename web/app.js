@@ -555,9 +555,12 @@ async function makePlans() {
     <div class="tcard"><span class="tstat run"></span><span class="ttitle">分析内容特征</span>
       <span class="ttool">deepseek</span><span class="ttime"></span>
       <div class="tdetail"><div>主题 / 受众 / 大纲 / 数据点</div></div></div>
-    <div class="tcard"><span class="tstat run"></span><span class="ttitle">出三套拍法</span>
+    <div class="tcard"><span class="tstat run"></span><span class="ttitle">三套风格库方案</span>
       <span class="ttool">deepseek</span><span class="ttime"></span>
-      <div class="tdetail"><div>三套视觉语言不同的方案，各带理由</div></div></div>`;
+      <div class="tdetail"><div>避开你上一次的风格，三套视觉语言各不同</div></div></div>
+    <div class="tcard"><span class="tstat run"></span><span class="ttitle">Opus 原创第 4 套</span>
+      <span class="ttool">opus · custom</span><span class="ttime"></span>
+      <div class="tdetail"><div>不受风格库约束的原创视觉，失败会自动缺席</div></div></div>`;
   $('playerBox').hidden = true;
 
   try {
@@ -693,7 +696,7 @@ async function renderVideo(idx) {
       <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出三套方案</span><span class="ttool">deepseek</span><span class="ttime">✓</span></div>
       <div class="tcard" id="vStepGen"><span class="tstat run"></span><span class="ttitle">按「${esc(plan.name)}」写动画代码</span>
         <span class="ttool">${esc(plan.style)}</span><span class="ttime" id="vTimer">0s</span>
-        <div class="tdetail" id="vGenTx"><div>Opus 逐帧代码生成，通常 1-3 分钟</div></div></div>
+        <div class="tdetail" id="vGenTx"><div>Opus 逐帧代码生成，通常 5-10 分钟，请耐心等秒数走</div></div></div>
       <div class="tcard wait" id="vStepGate"><span class="tstat"></span><span class="ttitle">闸门校验</span>
         <span class="ttool">4 项检查</span><span class="ttime"></span>
         <div class="tdetail"><div>完整性 / 能播 / 有字 / 在动</div></div></div>
@@ -748,6 +751,7 @@ async function renderVideo(idx) {
     document.getElementById('pBack').onclick = () => {
       $('playerBox').hidden = true;
       $('planList').hidden = false;
+      $('playerBox').querySelectorAll('.prow, .vframe-wrap, iframe').forEach(el => el.remove());
       document.querySelectorAll('.plan .go').forEach(b => { b.disabled = false; });
     };
     $('vidHint').textContent = d ? '模型产物没过闸门，已降级模板' : '完成 · 可直接播放';
