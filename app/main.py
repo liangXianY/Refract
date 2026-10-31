@@ -25,7 +25,7 @@ from .config import settings
 from .config import registry
 from .llm import LLMClient
 from .pipeline.engine import run_pipeline
-from .pipeline.renderer import save_artifact
+from .pipeline.renderer import save_article
 from .pipeline.video import save_video, styles_meta
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -208,8 +208,14 @@ async def github_trending(days: int = 7, limit: int = 8, mode: str = "new", page
 
 @app.get("/api/articles/{task_id}/md")
 async def article_markdown(task_id: str) -> Any:
-    """文章的 Markdown 原文，带下载头。产物页是给眼睛看的，发平台要的是 md。"""
+    """文章的 Markdown 原文，带下载头。产物页是给眼睛看的，发平台要的是 md。
+
+    两个下载头的坑（都踩过）：
+    - text/markdown 会被浏览器当文本预览甚至改名 .txt → 用 octet-stream 强制下载
+    - 中文文件名直接放 filename= 会乱码/被丢弃 → ASCII 兜底 + RFC 5987 filename*
+    """
     from .pipeline import runs
+    from urllib.parse import quote
 
     r = runs.get(settings.data_dir, task_id)
     if not r or r.get("kind") != "article":
@@ -220,11 +226,14 @@ async def article_markdown(task_id: str) -> Any:
     from fastapi import Response
 
     name = (r.get("brief") or {}).get("topic") or task_id
-    safe = "".join(c for c in name if c.isalnum() or c in "._-－")[:40] or task_id
+    safe_ascii = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._-"))[:40] or task_id
+    utf8_name = quote(f"{name[:40]}.md")
     return Response(
         content=body,
-        media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.md"'},
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_ascii}.md"; filename*=UTF-8\'\'{utf8_name}'
+        },
     )
 
 
@@ -312,7 +321,7 @@ async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
     from .agents.memory_keeper import MemoryKeeper
     from .agents.supervisor import handle_chat
     from .pipeline import runs
-    from .pipeline.renderer import save_artifact
+    from .pipeline.renderer import save_article
     from .schemas import ContentBrief
 
     started = time.time()
@@ -335,7 +344,7 @@ async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
         if art:
             r = art["result"]
             brief = ContentBrief.model_validate(r["brief"])
-            save_artifact(brief, r["body"], task_id, settings.data_dir, f"对话 · {r['word_count']} 字")
+            save_article(brief, r["body"], task_id, settings.data_dir, f"对话 · {r['word_count']} 字 · {r['model']}")
             record["artifact"] = f"/r/{task_id}"
             runs.save(
                 settings.data_dir,
@@ -362,6 +371,7 @@ async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
             runs.save(settings.data_dir, record)
         task.result = {"kind": result.get("kind"), "steps": result.get("steps", [])}
         task.status = "done"
+        await task.push({"type": "done", "task_id": task_id, "result": task.result})
     except Exception as exc:
         task.status = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -447,7 +457,7 @@ async def _run(
             f"{result['word_count']} 字 · {dur} · "
             f"{'mock 数据' if result['mocked'] else '真实生成'}"
         )
-        save_artifact(brief, result["body"], task.id, settings.data_dir, meta)
+        save_article(brief, result["body"], task.id, settings.data_dir, meta)
 
         # 数据回流：把「结构 + 这次得分」写进长期记忆，下次 Reflector 有参照
         if result.get("structure"):
@@ -493,7 +503,9 @@ async def _run(
 
 
 def _sse(ev: dict[str, Any]) -> str:
-    return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+    # id 带 seq：浏览器断线重连时自动带 Last-Event-ID，
+    # 服务端从下一条续传，而不是从头回放——「你好」刷屏的根源就在回放
+    return f"id: {ev.get('seq', 0)}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
 @app.get("/api/tasks/{task_id}/events")
@@ -502,10 +514,16 @@ async def events(task_id: str, request: Request) -> StreamingResponse:
     if task is None:
         raise HTTPException(404, "task not found")
 
+    # 浏览器重连会带 Last-Event-ID：从那条之后续传，事件不重不漏
+    last_id = request.headers.get("last-event-id")
+    skip_until = int(last_id) if (last_id or "").isdigit() else -1
+
     async def gen():
         seen = 0
-        # 先补发已产生的事件（支持中途打开/刷新页面）
+        # 补发已产生的事件（支持中途打开/刷新页面），跳过客户端已收过的
         for ev in list(task.events):
+            if ev["seq"] <= skip_until:
+                continue
             yield _sse(ev)
             seen = ev["seq"] + 1
         if task.status in ("done", "failed"):

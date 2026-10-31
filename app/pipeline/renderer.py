@@ -421,3 +421,62 @@ def save_artifact(brief: ContentBrief, body: str, artifact_id: str, data_dir: Pa
     path = out_dir / f"{artifact_id}.html"
     path.write_text(render_artifact(brief, body, artifact_id, meta_line), encoding="utf-8")
     return path
+
+
+def render_article_page(brief: ContentBrief, body: str, meta_line: str) -> str:
+    """文章的「阅读页」。
+
+    之前 /r/{id} 打开的是动画页——产物混淆的根源：文章的阅读产物和动画产物
+    是两个东西，必须分开存、分开看。这里只负责把成稿排版成能读的页面。
+    """
+    import html as _html
+
+    title = _html.escape(brief.topic)
+    meta = _html.escape(
+        " · ".join(
+            x
+            for x in [
+                brief.platform,
+                brief.audience,
+                f"{len(body)} 字",
+                brief.tone,
+                meta_line,
+            ]
+            if x
+        )
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  body{{margin:0;background:#fbfbf9;color:#111211;
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+    line-height:1.9;-webkit-font-smoothing:antialiased}}
+  main{{max-width:720px;margin:0 auto;padding:56px 22px 80px}}
+  .kicker{{font-size:11px;letter-spacing:.18em;color:#12a37f;font-weight:700;margin-bottom:14px}}
+  h1{{font-size:26px;letter-spacing:-.01em;line-height:1.4;margin:0 0 10px}}
+  .meta{{font-size:12px;color:#858783;border-bottom:1px solid #e6e6e2;padding-bottom:18px;margin-bottom:30px}}
+  .body h2{{font-size:19px;margin:34px 0 12px;letter-spacing:-.01em}}
+  .body h3,.body h4{{font-size:16px;margin:26px 0 10px}}
+  .body p{{margin:0 0 16px;font-size:15px}}
+  .body li{{margin:0 0 8px;font-size:15px}}
+  .body strong{{color:#000}}
+  footer{{margin-top:52px;padding-top:16px;border-top:1px solid #e6e6e2;
+    font-size:11px;color:#a8aaa5;font-family:ui-monospace,Consolas,monospace}}
+</style></head><body><main>
+  <div class="kicker">REFRACT · ARTICLE</div>
+  <h1>{title}</h1>
+  <div class="meta">{meta}</div>
+  <div class="body">{md_to_html(body)}</div>
+  <footer>{_html.escape(meta_line)} · 由 Refract 生成</footer>
+</main></body></html>"""
+
+
+def save_article(brief: ContentBrief, body: str, artifact_id: str, data_dir: Path, meta_line: str) -> Path:
+    """文章阅读页，存 artifacts/{id}.html。动画产物走 /v/{id}，别再混。"""
+    out_dir = data_dir / "artifacts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{artifact_id}.html"
+    path.write_text(render_article_page(brief, body, meta_line), encoding="utf-8")
+    return path
