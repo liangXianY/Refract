@@ -269,6 +269,11 @@ def _brief_block(brief: ContentBrief, plan: VideoPlan) -> str:
             f"{'等宽字体' if st.font == 'mono' else '无衬线字体'}、圆角风格 {st.radius}px。"
             f"背景/文字/强调色全部使用这些值，不要自作主张换色系。"
         )
+    else:
+        lines.append(
+            "风格：custom——视觉语言完全由你原创。配色、字体气质、图形语言都自己定，"
+            "但必须自成一体且贴合内容；工艺规则（固定种子/缓动/节拍/文字停留）仍然全部适用。"
+        )
     lines += ["", "要点（按顺序出现在画面上）："]
     for i, s in enumerate(brief.outline[:6], 1):
         pts = "／".join(s.points[:3])

@@ -615,7 +615,8 @@ async def video_plans(payload: PlansIn) -> dict[str, Any]:
     from .pipeline.director import recommend_plans
 
     brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
-    ps = await recommend_plans(llm, brief, last_style=memory.get("last_video_style") or "")
+    ps = await recommend_plans(llm, brief, last_style=memory.get("last_video_style") or "",
+                               opus_custom=not settings.mock)
     return {
         "brief": brief.model_dump(),
         "plans": [p.model_dump() for p in ps.plans],

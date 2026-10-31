@@ -173,6 +173,7 @@ async def recommend_plans(
     body: str = "",
     top_k: int = 3,
     last_style: str = "",
+    opus_custom: bool = False,
 ) -> PlanSet:
     """出三套方案。mock 模式走规则模板，真实模式走 DeepSeek。
 
@@ -222,5 +223,50 @@ async def recommend_plans(
             )
         )
     if not plans:
-        return PlanSet(plans=_mock_plans(brief), model="fallback", mocked=True)
+        return PlanSet(plans=_mock_plans(brief), model="fallback", mocked=False)
+    if opus_custom:
+        extra = await _opus_custom_plan(llm, brief, body)
+        if extra:
+            plans.append(extra)
     return PlanSet(plans=plans, model=llm.provider("text").model, mocked=False)
+
+
+_OPUS_CUSTOM_SYSTEM = """你是 Motion Graphics 导演。前一个模型已经按常规风格库出了 3 套方案，
+你的任务是出第 4 套：**完全原创的视觉语言**，不受任何现有风格约束。
+
+要求：
+1. 视觉语言必须和"深底科技风、白底线稿、像素风、几何拼贴、杂志排版、蓝图"全都不同——
+   可以从水墨、乐谱、地图、气象、建筑平面、化学实验、盲文、电路板原理图……任何领域借视觉隐喻
+2. 输出风格与其他方案相同的 JSON（单对象不是数组）：
+   {"id": "D", "name": "...", "style": "custom", "concept": "...", "why": "...",
+    "duration": 22, "beats": ["..."], "palette": ["#..."], "motion": "..."}
+3. palette 3-4 个色值；concept 依然写"屏幕上发生什么"
+"""
+
+
+async def _opus_custom_plan(llm: LLMClient, brief: ContentBrief, body: str) -> VideoPlan | None:
+    """第 4 套：Opus 亲自设计。失败了就悄悄不出现，前三套不受影响。"""
+    try:
+        data = await llm.structured(
+            system=_OPUS_CUSTOM_SYSTEM,
+            user=f"内容摘要：\n{_content_digest(brief, body)}",
+            max_tokens=1200,
+            temperature=0.9,
+            route="video",  # 视觉原创就是 Opus 的活，这里花它的钱才花在刀刃上
+        )
+        raw = data if data.get("concept") else (data.get("plans") or [{}])[0]
+        if not raw.get("concept"):
+            return None
+        return VideoPlan(
+            id=str(raw.get("id") or "D"),
+            name=str(raw.get("name") or "Opus 原创")[:40],
+            style="custom",
+            concept=str(raw.get("concept") or "")[:200],
+            why=str(raw.get("why") or "由 Opus 完全原创的视觉语言，风格库之外的第四种可能")[:200],
+            duration=max(12, min(40, int(raw.get("duration") or 22))),
+            beats=[str(b)[:120] for b in (raw.get("beats") or [])][:6],
+            palette=[str(c) for c in (raw.get("palette") or [])][:4],
+            motion=str(raw.get("motion") or "")[:200],
+        )
+    except Exception:
+        return None
