@@ -740,7 +740,7 @@ async function renderVideo(idx) {
     $('playerBox').innerHTML = `
       <div class="prow">
         <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
-        <span class="meta">${esc(plan.name)} · ${esc(done.result.model || '')}${d ? ' · 降级模板' : ''}</span>
+        <span class="meta">${esc(plan.name)} · ${esc(done.result?.model || '')}${d ? ' · 降级模板' : ''}</span>
         <button class="ghost" id="pBack">换一套</button>
       </div>
       <iframe src="${done.url}" title="视频成品"></iframe>`;

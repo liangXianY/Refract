@@ -749,7 +749,8 @@ async def _run_video(
         }
         task.status = "done"
         task.result = record["result"]
-        await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded})
+        await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded,
+                         "result": task.result})
     except Exception as exc:
         task.status = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"
