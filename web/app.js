@@ -32,7 +32,7 @@ function renderMd(text, withCursor) {
 }
 
 /** 起任务 + 读 SSE。onEvent 收到每一个事件。 */
-async function runTask(payload, onEvent, path = '/api/generate') {
+async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 90000) {
   const resp = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -47,13 +47,14 @@ async function runTask(payload, onEvent, path = '/api/generate') {
 
   return new Promise((resolve, reject) => {
     const es = new EventSource(`/api/tasks/${task_id}/events`);
-    // 看门狗：90 秒没有任何事件就判卡死，主动断开，别让光标永远闪
+    // 看门狗：timeoutMs 内没有任何事件就判卡死。默认 90s；
+    // 视频成片要等 Opus 写 3-5 分钟代码，调用方得显式放宽
     let lastBeat = Date.now();
     const watchdog = setInterval(() => {
-      if (Date.now() - lastBeat > 90000) {
+      if (Date.now() - lastBeat > timeoutMs) {
         clearInterval(watchdog);
         es.close();
-        reject(new Error('任务 90 秒没有响应，已断开（可重试）'));
+        reject(new Error('任务超时没有响应，已断开（可重试）'));
       }
     }, 5000);
     const finish = (fn, arg) => { clearInterval(watchdog); es.close(); fn(arg); };
@@ -163,7 +164,8 @@ async function playInChat(flow, plan, btn) {
         if (ev.type === 'stage') card.querySelector('.ttitle').textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
         if (ev.type === 'gate') card.querySelector('.ttime').textContent = ev.ok ? `闸门过·第${ev.attempts}版` : '未过闸';
       },
-      '/api/video/render'
+      '/api/video/render',
+      600000
     );
     card.querySelector('.tstat').className = 'tstat ok';
     card.querySelector('.ttime').textContent = done.degraded ? '降级模板' : '完成';
@@ -638,7 +640,8 @@ async function renderVideo(idx) {
             : `未过闸门：${(ev.failures || [])[0] || ''}`;
         }
       },
-      '/api/video/render'
+      '/api/video/render',
+      600000
     );
 
     const d = done.degraded;

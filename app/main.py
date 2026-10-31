@@ -532,7 +532,7 @@ async def events(task_id: str, request: Request) -> StreamingResponse:
             try:
                 ev = await asyncio.wait_for(task.queue.get(), timeout=20)
             except asyncio.TimeoutError:
-                yield ": ping\n\n"  # 心跳，防中间层掐断
+                yield _sse({"type": "ping"})  # 心跳：注释行(: ping)不会触发前端 onmessage，看门狗会误判卡死
                 if await request.is_disconnected():
                     return
                 continue
