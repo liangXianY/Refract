@@ -38,6 +38,15 @@ class LLMError(RuntimeError):
     pass
 
 
+def _clean_error(body: str) -> str:
+    """错误页可能是 HTML（网关 524/502 的页面）。抓 <title> 或第一段文字，别把源码甩给用户。"""
+    m = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+    if m:
+        return re.sub(r"\s+", " ", m.group(1)).strip()[:120]
+    text = re.sub(r"<[^>]+>", " ", body)
+    return re.sub(r"\s+", " ", text).strip()[:120] or "（网关返回了空错误页）"
+
+
 def loads_loose(text: str) -> dict:
     """宽松 JSON 解析。
 
@@ -131,7 +140,7 @@ class LLMClient:
                     await asyncio.sleep(1.5)
                     continue
                 if resp.status_code >= 400:
-                    raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {resp.text[:300]}")
+                    raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {_clean_error(resp.text)}")
                 return resp
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = exc
@@ -242,18 +251,10 @@ class LLMClient:
         """
         p = self.provider(route)
         if p.protocol == "anthropic":
-            payload = {
-                "model": p.model,
-                "max_tokens": min(max_tokens, p.max_tokens),
-                "system": system,
-                "messages": [{"role": "user", "content": user}],
-                "temperature": temperature,
-            }
-            resp = await self._post(p, self._v1(p, "/messages"), payload)
-            data = resp.json()
-            text = "".join(
-                b.get("text", "") for b in data.get("content") or [] if b.get("type") == "text"
-            )
+            # 走流式收集而不是一次性请求：
+            # 中转站前面是 Cloudflare，非流式请求等 Opus 生成 3-5 分钟必吃 524；
+            # 流式时连接上一直有数据，网关就不会掐。
+            text, stop = await self._anthropic_collect(p, system, user, max_tokens, temperature)
             return strip_fence(text), p
 
         payload = {
@@ -291,6 +292,50 @@ class LLMClient:
         async for item in gen:
             yield item
 
+    async def _anthropic_collect(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> tuple[str, str]:
+        """流式发起、服务端收集成完整文本。
+
+        和 _stream_anthropic 的区别：那个把增量吐给调用方（写作流式），
+        这个攒成整份返回（成片代码需要完整文件再跑闸门）。
+        两者都必须走流式——对网关来说，流式 = 一直有数据 = 不掐连接。
+        """
+        payload = {
+            "model": p.model,
+            "max_tokens": min(max_tokens, p.max_tokens),
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "stream": True,
+            "temperature": temperature,
+        }
+        client = self._client(p)
+        parts: list[str] = []
+        stop = ""
+        async with client.stream("POST", self._v1(p, "/messages"), json=payload) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode()[:300]
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {_clean_error(body)}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if not chunk or chunk == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                kind = obj.get("type")
+                if kind == "content_block_delta":
+                    d = obj.get("delta") or {}
+                    if d.get("type") == "text_delta" and d.get("text"):
+                        parts.append(d["text"])
+                elif kind == "message_delta":
+                    d = obj.get("delta") or {}
+                    stop = d.get("stop_reason") or stop
+        return "".join(parts), stop
+
     async def _stream_openai(
         self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
     ) -> AsyncIterator[tuple[str, str]]:
@@ -308,7 +353,7 @@ class LLMClient:
         async with client.stream("POST", self._v1(p, "/chat/completions"), json=payload) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode()[:300]
-                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {body}")
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {_clean_error(body)}")
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -340,7 +385,7 @@ class LLMClient:
         async with client.stream("POST", self._v1(p, "/messages"), json=payload) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode()[:300]
-                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {body}")
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {_clean_error(body)}")
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue

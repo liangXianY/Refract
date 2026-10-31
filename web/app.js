@@ -417,7 +417,8 @@ function renderBrief(b) {
   const ol = (b.outline || []).map(s => `<li>${esc(s.heading)}</li>`).join('');
   const facts = (b.facts || []).map(f =>
     `<div class="fact ${f.source ? '' : 'warn'}">${f.source ? '✓' : '⚠'} ${esc(f.claim)}${f.source ? '（' + esc(f.source) + '）' : '（无出处）'}</div>`).join('');
-  $('artBrief').innerHTML = `<div class="bt">${esc(b.topic)}</div>
+  $('artBrief').innerHTML = `<div class="bnote">这是写作前的<b>规划输出</b>，不是文章：先定主题、读者、大纲和字数，再照着写。事实点 ✓ = 在链接里找到了出处；⚠ 黄色 = 没找到出处，写作时会回避或标注。</div>
+    <div class="bt">${esc(b.topic)}</div>
     <div class="bd">${esc(b.angle || '')}</div>
     <div class="tags">${tags}</div><ol>${ol}</ol>${facts}`;
   $('artBrief').classList.add('on');
@@ -446,31 +447,51 @@ $('artInput').addEventListener('keydown', (e) => {
 });
 
 /* ---- GitHub 热点选题 ----
-   不自动拉取：一进页面就打 GitHub API 会白耗 60 次/小时的限额。 */
+   不自动拉取：一进页面就打 GitHub API 会白耗 60 次/小时的限额。
+   两个榜单：new = 近 7 天新建的高星新仓库；hot = 高星且近期还在更新的老牌。
+   「换一批」翻页，翻到头自动切另一个榜单。 */
+
+let ghState = { mode: 'new', page: 1 };
+
+function renderTrend(items) {
+  $('ghList').innerHTML = items.map(i => `
+    <button class="titem" data-obj="${esc(i.full_name)}">
+      <b>${esc(i.full_name)}</b>
+      <span>★ ${i.stars}${i.language ? ' · ' + esc(i.language) : ''}</span>
+      <em>${esc((i.description || '').slice(0, 46))}</em>
+    </button>`).join('');
+  document.querySelectorAll('.titem').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('.titem').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      const name = b.dataset.obj;
+      $('artInput').value = `用 GitHub 上的 ${name} 这个项目写一篇介绍（链接：https://github.com/${name}）`;
+      autosize($('artInput'));
+      $('artHint').textContent = '已选中，点「生成文章」';
+    };
+  });
+}
 
 $('ghLoad').onclick = async () => {
   $('ghLoad').disabled = true;
-  $('ghLoad').textContent = '拉取中…';
+  const { mode, page } = ghState;
+  $('ghLoad').textContent = page > 1 ? `翻页中…（${mode === 'new' ? '新秀' : '热门'}榜 第${page}页）` : '拉取中…';
   try {
-    const d = await (await fetch('/api/trending/github?days=7&limit=8')).json();
+    const d = await (await fetch(`/api/trending/github?days=7&limit=8&mode=${mode}&page=${page}`)).json();
     if (d.detail) throw new Error(d.detail);
-    $('ghList').innerHTML = (d.items || []).map(i => `
-      <button class="titem" data-obj="${esc(i.full_name)}">
-        <b>${esc(i.full_name)}</b>
-        <span>★ ${i.stars}${i.language ? ' · ' + esc(i.language) : ''}</span>
-        <em>${esc((i.description || '').slice(0, 46))}</em>
-      </button>`).join('');
-    document.querySelectorAll('.titem').forEach(b => {
-      b.onclick = () => {
-        document.querySelectorAll('.titem').forEach(x => x.classList.remove('on'));
-        b.classList.add('on');
-        const name = b.dataset.obj;
-        $('artInput').value = `用 GitHub 上的 ${name} 这个项目写一篇介绍（链接：https://github.com/${name}）`;
-        autosize($('artInput'));
-        $('artHint').textContent = '已选中，点「生成文章」';
-      };
-    });
-    $('ghLoad').textContent = '换一批';
+    renderTrend(d.items);
+    const label = mode === 'new'
+      ? '新秀榜：近 7 天新建、star 涨得最快的仓库'
+      : '热门榜：star 3000+ 且本周还在更新的仓库';
+    $('ghMode').textContent = `${label} · 第 ${d.page} 页`;
+    if (d.has_more) {
+      ghState.page = page + 1;
+      $('ghLoad').textContent = '换一批';
+    } else {
+      ghState.mode = mode === 'new' ? 'hot' : 'new';
+      ghState.page = 1;
+      $('ghLoad').textContent = `换到${ghState.mode === 'new' ? '新秀' : '热门'}榜`;
+    }
   } catch (e) {
     $('ghList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
     $('ghLoad').textContent = '重试';

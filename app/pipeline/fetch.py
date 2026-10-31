@@ -266,26 +266,39 @@ def to_prompt_material(page: FetchedPage, limit: int = 6000) -> str:
 
 # ---------------------------------------------------------- GitHub 热点
 # github.com/trending 网页在国内服务器直连不通，而且它是 HTML 没有官方 API。
-# 等价的官方接口是 Search API：`created:>N天前 stars:>阈值 sort:stars`，
-# 结果和 trending 页高度重合，还带完整元数据。
+# 等价的官方接口是 Search API，但有个事实要说清楚：
+# Search API 只能按「总 star 数」排序，给不出「近 7 天 star 增量」——
+# 任何"用 Search API 复刻 trending"都是在做近似。两种近似各有偏向：
+#   mode=new  近 N 天新建 + star 达标 → 抓「新秀」，老牌项目永远不上榜
+#   mode=hot  高星 + 近 N 天有推送   → 抓「大牌在动」，新项目进不来
+# 默认 new（体感最接近 trending）；换一批翻页，翻到头自动切另一个榜单。
 
-async def github_trending(days: int = 7, limit: int = 10) -> list[dict]:
-    """近 N 天新增仓库按 star 排序。返回给前端选选题用的轻量列表。"""
+async def github_trending(days: int = 7, limit: int = 10, mode: str = "new", page: int = 1) -> dict:
+    """热点仓库。返回 {mode, page, has_more, items}。"""
     from datetime import datetime, timedelta, timezone
 
-    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 30)))).strftime("%Y-%m-%d")
+    days = max(1, min(days, 30))
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
     api = "https://api.github.com"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "refract-content-agent",
         **({"Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}"} if os.environ.get("GITHUB_TOKEN") else {}),
     }
-    q = f"created:>{since} stars:>200"
+    if mode == "hot":
+        q = f"stars:>3000 pushed:>{since}"
+    else:
+        mode = "new"
+        q = f"created:>{since} stars:>200"
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers=headers) as client:
             resp = await client.get(
                 f"{api}/search/repositories",
-                params={"q": q, "sort": "stars", "order": "desc", "per_page": max(3, min(limit, 20))},
+                params={
+                    "q": q, "sort": "stars", "order": "desc",
+                    "per_page": max(3, min(limit, 20)),
+                    "page": max(1, min(page, 10)),
+                },
             )
     except httpx.RequestError as exc:
         raise FetchError(f"GitHub Search API 网络错误：{type(exc).__name__}")
@@ -294,18 +307,20 @@ async def github_trending(days: int = 7, limit: int = 10) -> list[dict]:
     if resp.status_code >= 400:
         raise FetchError(f"GitHub Search API 返回 {resp.status_code}")
 
-    out: list[dict] = []
-    for item in (resp.json().get("items") or [])[:limit]:
-        out.append(
-            {
-                "full_name": item.get("full_name"),
-                "description": item.get("description") or "",
-                "stars": item.get("stargazers_count", 0),
-                "language": item.get("language") or "",
-                "url": item.get("html_url"),
-                "topics": (item.get("topics") or [])[:5],
-            }
-        )
+    data = resp.json()
+    items = data.get("items") or []
+    total = min(int(data.get("total_count") or 0), 1000)  # API 最多翻到 1000 条
+    out = [
+        {
+            "full_name": i.get("full_name"),
+            "description": i.get("description") or "",
+            "stars": i.get("stargazers_count", 0),
+            "language": i.get("language") or "",
+            "url": i.get("html_url"),
+            "topics": (i.get("topics") or [])[:5],
+        }
+        for i in items
+    ]
     if not out:
-        raise FetchError(f"近 {days} 天没有 star>200 的新仓库，放宽条件再试")
-    return out
+        raise FetchError("这一页没有仓库了，再点一次会切换榜单")
+    return {"mode": mode, "page": page, "has_more": page * limit < total, "items": out}

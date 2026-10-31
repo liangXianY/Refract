@@ -495,3 +495,8 @@ footer{
 .ai-links{display:flex;gap:10px;margin-left:auto}
 .ai-links a{font-size:11px;color:var(--accent);text-decoration:none}
 @keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+.tmode{margin-top:7px;font-size:10px;color:var(--dim);line-height:1.6}
+.bnote{margin-bottom:9px;padding:7px 10px;border-radius:7px;background:var(--accent-soft);
+  font-size:10.5px;color:var(--ink2);line-height:1.7}
+.bnote b{color:var(--accent)}

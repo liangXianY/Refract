@@ -193,15 +193,17 @@ async def fetch_preview(payload: FetchIn) -> dict[str, Any]:
 
 
 @app.get("/api/trending/github")
-async def github_trending(days: int = 7, limit: int = 10) -> dict[str, Any]:
-    """GitHub 近 N 天热点仓库。给「热点 → 文章」链当选题池。"""
+async def github_trending(days: int = 7, limit: int = 8, mode: str = "new", page: int = 1) -> dict[str, Any]:
+    """GitHub 热点仓库。mode=new 新秀榜 / mode=hot 高星活跃榜；page 翻页。"""
     from .pipeline.fetch import FetchError, github_trending
 
+    if mode not in ("new", "hot"):
+        raise HTTPException(400, "mode 只能是 new 或 hot")
     try:
-        items = await github_trending(days=days, limit=limit)
+        data = await github_trending(days=days, limit=limit, mode=mode, page=page)
     except FetchError as exc:
         raise HTTPException(502, str(exc)) from exc
-    return {"days": days, "items": items}
+    return data
 
 
 @app.get("/api/articles/{task_id}/md")
