@@ -615,7 +615,7 @@ async def video_plans(payload: PlansIn) -> dict[str, Any]:
     from .pipeline.director import recommend_plans
 
     brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
-    ps = await recommend_plans(llm, brief)
+    ps = await recommend_plans(llm, brief, last_style=memory.get("last_video_style") or "")
     return {
         "brief": brief.model_dump(),
         "plans": [p.model_dump() for p in ps.plans],
@@ -751,6 +751,9 @@ async def _run_video(
         }
         task.status = "done"
         task.result = record["result"]
+        # 记录最近风格：下次出方案时避开，防止连看几条都是同一种视觉
+        if not degraded:
+            memory.set("last_video_style", plan_obj.style or "hud", "general")
         await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded,
                          "result": task.result})
     except Exception as exc:

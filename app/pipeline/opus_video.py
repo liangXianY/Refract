@@ -58,7 +58,9 @@ SYSTEM = """你是 Motion Graphics 工程师，用 Canvas 2D 写一条中文演�
   数字微抖。静止的画面等于死画面
 - 至少一处强调动作：急停、回弹、爆闪或速度突变
 - 转场用同一场景内的空间运动（推进、扫描线、元素汇聚、镜头推拉），不要白场切换
-- 用单色强调 + 深色底做出层次；至少 3 层景深（背景网格 / 中景内容 / 前景浮层）
+- 层次要分明（背景质感 / 中景内容 / 前景浮层），但背景质感**必须服从给定风格**：
+  深色科技风才用网格、扫描线；纸面线稿风用留白和微纹理；像素风用色块。
+  严禁把所有片子都画成同一种深底科技风——风格意向和配色是硬要求，不是建议
 
 我会给你：标题、要点、时长、配色、节奏点。按节奏点排时间轴。
 写完自己检查一遍：有没有字？有没有持续运动？有没有分页？
@@ -242,9 +244,20 @@ def _brief_block(brief: ContentBrief, plan: VideoPlan) -> str:
         f"受众：{brief.audience}；语气：{brief.tone}",
         f"时长：{plan.duration} 秒",
         f"配色：{'、'.join(plan.palette) or '#05080c、#22d3ee、#f8fafc'}",
-        "",
-        "要点（按顺序出现在画面上）：",
     ]
+    # 风格库的具体参数必须传：之前只给 palette 三个色，Opus 全靠自己猜，
+    # 六条片子写成了同一种深底科技风。styles.py 的定义才是风格的完整定义。
+    from .styles import STYLES
+
+    st = STYLES.get(plan.style)
+    if st:
+        lines.append(
+            f"风格硬约束（{st.name}）：底色 {st.bg}（次 {st.bg2}）、主文字 {st.ink}、"
+            f"次要文字 {st.dim}、强调色 {st.accent} 与 {st.accent2}、"
+            f"{'等宽字体' if st.font == 'mono' else '无衬线字体'}、圆角风格 {st.radius}px。"
+            f"背景/文字/强调色全部使用这些值，不要自作主张换色系。"
+        )
+    lines += ["", "要点（按顺序出现在画面上）："]
     for i, s in enumerate(brief.outline[:6], 1):
         pts = "／".join(s.points[:3])
         lines.append(f"  {i}. {s.heading}" + (f"  —— {pts}" if pts else ""))

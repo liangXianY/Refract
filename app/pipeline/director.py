@@ -172,17 +172,30 @@ async def recommend_plans(
     brief: ContentBrief,
     body: str = "",
     top_k: int = 3,
+    last_style: str = "",
 ) -> PlanSet:
-    """出三套方案。mock 模式走规则模板，真实模式走 DeepSeek。"""
+    """出三套方案。mock 模式走规则模板，真实模式走 DeepSeek。
+
+    last_style：用户最近一次成片用的风格。不传它，六条片子能全是 line+hud——
+    不是模型不会出别的，是「亲和、适合读者」这类理由最安全，永远排第一。
+    """
     if llm.cfg.mock:
         return PlanSet(plans=_mock_plans(brief)[:top_k], model="mock", mocked=True)
+
+    avoid = ""
+    if last_style:
+        avoid = (
+            f"\n\n注意：用户最近一次成片用的是「{last_style}」风格，"
+            f"三套方案里**不允许任何一套再用它做主风格**（辅助色元素可以借鉴）。"
+            f"用户连看两个同风格片子会审美疲劳，这不是建议是要求。"
+        )
 
     data = await llm.structured(
         system=SYSTEM,
         user=(
             f"内容摘要：\n{_content_digest(brief, body)}\n\n"
             f"可选风格库：\n{_style_menu()}\n\n"
-            f"给 {top_k} 套方案。"
+            f"给 {top_k} 套方案。{avoid}"
         ),
         max_tokens=2200,
         temperature=0.8,
