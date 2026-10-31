@@ -278,31 +278,50 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
     # b) 一个占位都没有（模型没按引导写）→ 主动搜一张插到第一个小节后
     #    「这篇文章没有图片」就是这么来的——不能指望模型每次都记得插图
     body = result["body"]
-    if not llm.cfg.mock and "](prompt:" not in body and "![" not in body:
+    import re as _re
+
+    if not llm.cfg.mock and "![" in body:
+        # 占位 alt 就是搜索关键词（Writer 被要求写成描述性短语）
+        alts = [a for a in _re.findall(r"!\[([^\]]*)\]\((?:prompt:)?[^)]*\)", body) if a.strip()]
+        query = " ".join(alts[:2]) or str(args.get("input") or "")[:80]
         try:
-            img_res = await search(str(args.get("input") or "")[:80], max_results=4, with_images=True)
-            urls = [i["url"] for i in img_res.images if i.get("url")]
-            if urls:
-                import re as _re
+            img_res = await search(query[:120], max_results=6, with_images=True)
+            # url + 官方描述：description 比 alt 更能说清图里是什么
+            pool = [{"url": i["url"], "desc": (i.get("description") or "").strip()}
+                    for i in img_res.images if i.get("url")]
+
+            # a) 占位 → 真图；alt 换成图片描述（没描述保留原 alt）
+            n = min(len(pool), body.count("](prompt:"))
+            if n:
+                used = pool[:n]
+                it = iter(used)
+                body = _re.sub(
+                    r"!\[([^\]]*)\]\(prompt:[^)]*\)",
+                    lambda m: (lambda u: f"![{(u['desc'] or m.group(1)).strip()[:60]}]({u['url']})")(next(it)),
+                    body,
+                )
+                pool = pool[n:]
+
+            # b) 还剩图且正文图少于 3 张 → 再插到后面的小节（一篇文章一张图像硬凑的）
+            have = len(_re.findall(r"!\[", body))
+            if pool and have < 3:
                 heads = list(_re.finditer(r"^## .+$", body, _re.M))
-                insert_at = heads[1].start() if len(heads) > 1 else (
-                    heads[0].end() if heads else len(body))
-                img_md = f"\n\n![配图：{brief_img_hint(args, body)}]({urls[0]})\n"
-                body = body[:insert_at] + img_md + body[insert_at:]
+                spots = [h.end() for h in heads]
+                inserted = 0
+                for idx in range(2, len(spots), 2):  # 中后段的小节
+                    if inserted >= len(pool) or have + inserted >= 3:
+                        break
+                    u = pool[inserted]
+                    alt = (u["desc"] or "配图")[:60]
+                    img_md = f"\n\n![{alt}]({u['url']})\n"
+                    at = spots[idx]
+                    body = body[:at] + img_md + body[at:]
+                    # 插入使后续偏移变化，重算
+                    heads = list(_re.finditer(r"^## .+$", body, _re.M))
+                    spots = [h.end() for h in heads]
+                    inserted += 1
         except Exception:
-            pass
-    if not llm.cfg.mock and "](prompt:" in body:
-        try:
-            img_res = await search(str(args.get("input") or "")[:80], max_results=5, with_images=True)
-            urls = iter([i["url"] for i in img_res.images])
-            import re as _re
-            body = _re.sub(
-                r"!\[([^\]]*)\]\(prompt:[^)]*\)",
-                lambda m: f"![{m.group(1)}]({u})" if (u := next(urls, None)) else m.group(0),
-                body,
-            )
-        except Exception:
-            pass  # 搜图失败保占位，不阻塞出稿
+            pass  # 搜图任何失败都保持原稿，不阻塞  # 搜图失败保占位，不阻塞出稿
 
     result["body"] = body
     return {

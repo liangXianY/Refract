@@ -39,6 +39,12 @@ def _render_table(rows: list[list[str]]) -> str:
     return f"<table><thead><tr>{th}</tr></thead><tbody>{trs}</tbody></table>"
 
 
+def _img_cap_ok(alt: str) -> bool:
+    """图片说明只在有信息量时显示。占位时代写下的"这里放什么图"之类不算。"""
+    a = (alt or "").strip()
+    return bool(a) and not re.search(r"这里放|什么图|配图位|图片", a)
+
+
 def md_to_html(md: str) -> str:
     """够用就行的 Markdown 渲染。不引第三方库，减少攻击面。
 
@@ -98,7 +104,8 @@ def md_to_html(md: str) -> str:
                 + _inline_md(m_real.group(2))
                 + '" alt="' + alt + '" loading="lazy" referrerpolicy="no-referrer" '
                 + 'onerror="this.closest(\'figure\').style.display=\'none\'">'
-                + "<figcaption>" + alt + "</figcaption></figure>"
+                + ("<figcaption>" + alt + "</figcaption>" if _img_cap_ok(m_real.group(1)) else "")
+                + "</figure>"
             )
             continue
 

@@ -47,7 +47,10 @@ function renderMd(text, withCursor) {
     const mImg = line.trim().match(/^!\[([^\]]*)\]\((https?:[^)]+)\)\s*$/);
     if (mImg) {
       if (inList) { out.push('</ul>'); inList = false; } flushTable();
-      out.push(`<figure class="mdimg"><img src="${esc(mImg[2])}" alt="${esc(mImg[1])}" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('figure').style.display='none'"><figcaption>${esc(mImg[1] || '配图')}</figcaption></figure>`);
+      const cap = (mImg[1] || '').trim();
+      const capHtml = cap && !/这里放|什么图|配图位|图片/.test(cap)
+        ? `<figcaption>${esc(cap)}</figcaption>` : '';
+      out.push(`<figure class="mdimg"><img src="${esc(mImg[2])}" alt="${esc(cap)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('figure').style.display='none'">${capHtml}</figure>`);
       continue;
     }
     if (line.startsWith('### ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h4>${inlineMd(line.slice(4))}</h4>`); }
