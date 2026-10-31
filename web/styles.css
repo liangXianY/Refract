@@ -446,3 +446,52 @@ footer{
 .titem em{display:block;font-style:normal;font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:2px}
 .tab-spacer{margin-left:auto;display:flex;align-items:center;gap:8px}
 #artDlSlot a{text-decoration:none}
+
+/* ---------- 对话：主 Agent 执行流 ---------- */
+.flow{display:flex;flex-direction:column;gap:7px;margin-bottom:8px}
+.tcard{
+  border:1px solid var(--line);border-radius:9px;background:#fff;padding:8px 11px;
+  display:grid;grid-template-columns:auto 1fr auto auto;gap:4px 9px;align-items:center;
+  animation:fadeUp .25s ease both;
+}
+.tstat{width:8px;height:8px;border-radius:50%;background:var(--dim);grid-row:1}
+.tstat.run{background:transparent;border:2px solid var(--accent);border-top-color:transparent;
+  width:10px;height:10px;animation:spin .8s linear infinite}
+.tstat.ok{background:var(--ok)}
+.tstat.err{background:var(--err)}
+.ttitle{font-size:12px;font-weight:600;color:var(--ink)}
+.ttool{font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+.ttime{font-family:var(--mono);font-size:9.5px;color:var(--muted);justify-self:end}
+.tdetail{grid-column:1/-1;font-size:10.5px;color:var(--muted);line-height:1.7;
+  font-family:var(--mono);display:flex;flex-direction:column;gap:1px}
+
+.plancard{border:1px dashed var(--line);border-radius:9px;padding:9px 11px;background:var(--bg)}
+.pc-h{font-size:10px;letter-spacing:.12em;color:var(--dim);text-transform:uppercase;margin-bottom:6px}
+.pc-s{display:flex;gap:8px;align-items:baseline;padding:3px 0;font-size:11.5px}
+.pc-s b{font-family:var(--mono);color:var(--accent);font-size:10px}
+.pc-s span{color:var(--ink2);font-weight:500}
+.pc-s em{font-style:normal;color:var(--dim);font-size:10.5px;margin-left:auto;text-align:right}
+
+.mini{display:flex;gap:8px;align-items:baseline;font-size:10.5px;color:var(--muted);
+  padding-left:14px;position:relative}
+.mini::before{content:"";position:absolute;left:4px;top:7px;width:4px;height:4px;border-radius:50%;background:var(--dim)}
+.mini b{font-family:var(--mono);font-size:9.5px;color:var(--dim);letter-spacing:.06em;flex:none}
+.mini.hl span{color:var(--accent);font-weight:600}
+
+.chatplans{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+.cplan{border:1px solid var(--line);border-radius:9px;background:#fff;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.cplan header{display:flex;gap:6px;align-items:baseline}
+.cplan b{font-size:12px}
+.cplan header span{font-family:var(--mono);font-size:9px;color:var(--dim);margin-left:auto}
+.cplan p{font-size:10.5px;color:var(--muted);line-height:1.6;flex:1}
+.cplan .go{align-self:flex-start;border:0;background:var(--ink);color:#fff;border-radius:6px;
+  padding:5px 12px;font-size:10.5px;font-weight:600;cursor:pointer;font-family:inherit}
+.cplan .go:hover{background:var(--accent)}
+
+.chatplayer{display:flex;flex-direction:column;gap:6px}
+.chatplayer iframe{width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:10px;background:#000}
+.chatplayer a{font-size:11px;color:var(--accent);text-decoration:none}
+.chatplayer .degrade{font-size:10px;color:var(--warn)}
+.ai-links{display:flex;gap:10px;margin-left:auto}
+.ai-links a{font-size:11px;color:var(--accent);text-decoration:none}
+@keyframes fadeUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}

@@ -90,18 +90,83 @@ function addMsg(role, html) {
   return el.querySelector('.body');
 }
 
-/** 意图识别。
- *  现在是关键词规则——够用，但要诚实：真正的意图识别应该走模型。
- *  单独抽一层是因为它决定「派给哪个子 Agent」，是路由核心。 */
-function detectIntent(text) {
-  const t = text.toLowerCase();
-  if (/(视频|短片|动画|分镜|镜头|video)/.test(t)) return { agent: 'Director', label: '视频生成', style: 'auto' };
-  if (/(链接|网址|https?:\/\/|抓取|爬)/.test(t)) return { agent: 'Researcher', label: '链接解析', style: null };
-  if (/(小红书|xhs)/.test(t)) return { agent: 'Writer', label: '文章生成 · 小红书', platform: 'xiaohongshu' };
-  return { agent: 'Writer', label: '文章生成 · 公众号', platform: 'wechat' };
-}
+/* 对话不再由前端猜意图——主 Agent（Supervisor）在后端规划。
+   前端只负责把它的每一步亮出来：计划卡 → 工具卡 → 流式答复。 */
 
 let chatting = false;
+
+function toolCard(flow, title, tool) {
+  const el = document.createElement('div');
+  el.className = 'tcard';
+  el.innerHTML = `<span class="tstat run"></span><span class="ttitle">${esc(title)}</span>
+    <span class="ttool">${esc(tool)}</span><span class="ttime"></span>
+    <div class="tdetail"></div>`;
+  flow.appendChild(el);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  return el;
+}
+
+function miniLine(flow, label, text, cls = '') {
+  const el = document.createElement('div');
+  el.className = `mini ${cls}`;
+  el.innerHTML = `<b>${esc(label)}</b><span>${esc(text)}</span>`;
+  flow.appendChild(el);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  return el;
+}
+
+function planCard(flow, steps) {
+  const el = document.createElement('div');
+  el.className = 'plancard';
+  el.innerHTML = `<div class="pc-h">执行计划 · ${steps.length} 步</div>` +
+    steps.map((s, i) => `<div class="pc-s" data-i="${i}"><b>${i + 1}</b><span>${esc(s.title || s.tool)}</span><em>${esc(s.why || '')}</em></div>`).join('');
+  flow.appendChild(el);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  return el;
+}
+
+function plansCards(flow, plans) {
+  const wrap = document.createElement('div');
+  wrap.className = 'chatplans';
+  wrap.innerHTML = plans.map((p, i) => `
+    <div class="cplan">
+      <header><b>${esc(p.id)} · ${esc(p.name)}</b><span>${esc(p.style)} · ${p.duration}s</span></header>
+      <p>${esc(p.concept)}</p>
+      <button class="go" data-i="${i}">用这套拍</button>
+    </div>`).join('');
+  flow.appendChild(wrap);
+  wrap.querySelectorAll('.go').forEach(btn => {
+    btn.onclick = () => playInChat(flow, plans[+btn.dataset.i], btn);
+  });
+  chatlog.scrollTop = chatlog.scrollHeight;
+}
+
+async function playInChat(flow, plan, btn) {
+  btn.disabled = true;
+  btn.textContent = '生成中…';
+  const card = toolCard(flow, `按「${plan.name}」生成动画`, 'video_render');
+  try {
+    const done = await runTask(
+      { input: $('chatInput').value.trim() || plan.concept, platform: 'video', plan },
+      (ev) => {
+        if (ev.type === 'stage') card.querySelector('.ttitle').textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
+        if (ev.type === 'gate') card.querySelector('.ttime').textContent = ev.ok ? `闸门过·第${ev.attempts}版` : '未过闸';
+      },
+      '/api/video/render'
+    );
+    card.querySelector('.tstat').className = 'tstat ok';
+    card.querySelector('.ttime').textContent = done.degraded ? '降级模板' : '完成';
+    const player = document.createElement('div');
+    player.className = 'chatplayer';
+    player.innerHTML = `<a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
+      ${done.degraded ? '<span class="degrade">模型没过闸门，降级了模板片</span>' : ''}<iframe src="${done.url}" title="视频成品"></iframe>`;
+    flow.appendChild(player);
+    chatlog.scrollTop = chatlog.scrollHeight;
+  } catch (e) {
+    card.querySelector('.tstat').className = 'tstat err';
+    card.querySelector('.tdetail').textContent = e.message;
+  }
+}
 
 async function sendChat(text) {
   text = (text || '').trim();
@@ -113,18 +178,10 @@ async function sendChat(text) {
 
   addMsg('user', esc(text).replace(/\n/g, '<br/>'));
 
-  const intent = detectIntent(text);
-  const body = addMsg('ai', `<div class="intent"><i></i>意图：${intent.label} · 派给 ${intent.agent}</div>
-    <div class="md" data-md style="font-size:13.5px"><p class="ph">正在拆解…</p></div>`);
+  const body = addMsg('ai', `<div class="flow" data-flow></div>
+    <div class="md" data-md style="font-size:13.5px" hidden></div>`);
+  const flow = body.querySelector('[data-flow]');
   const mdBox = body.querySelector('[data-md]');
-
-  if (intent.agent === 'Researcher') {
-    mdBox.innerHTML = '<p>链接解析还没接上（P1 剩余部分）。当前只接受文本输入，抓取层需要 <code>trafilatura</code> + 无头浏览器截图，会单独做。</p>';
-    $('chatHint').textContent = 'Researcher · 未实现';
-    chatting = false;
-    $('chatSend').disabled = false;
-    return;
-  }
 
   let raw = '';
   let pending = false;
@@ -133,37 +190,104 @@ async function sendChat(text) {
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
+      mdBox.hidden = false;
       mdBox.innerHTML = renderMd(raw, true);
       chatlog.scrollTop = chatlog.scrollHeight;
     });
   };
 
+  let activeCard = null;
+  const cardFor = (i, tool, title) => {
+    if (activeCard && +activeCard.dataset.i === i) return activeCard;
+    activeCard = toolCard(flow, title || tool, tool);
+    activeCard.dataset.i = i;
+    return activeCard;
+  };
+
   try {
-    $('chatHint').textContent = `${intent.agent} 执行中…`;
-    const done = await runTask(
-      { input: text, platform: intent.platform || 'wechat', style: intent.style || 'auto', words: 'medium' },
+    $('chatHint').textContent = '主 Agent 规划中…';
+    await runTask(
+      { input: text },
       (ev) => {
-        if (ev.type === 'delta' && ev.kind === 'content') { raw += ev.text; flush(); }
-        if (ev.type === 'stage') $('chatHint').textContent = `${intent.agent} · ${ev.label}`;
-        if (ev.type === 'reflection') $('chatHint').textContent = `${intent.agent} · 第 ${ev.reflection.round} 轮 ${ev.reflection.total} 分`;
-      }
+        switch (ev.type) {
+          case 'plan':
+            if (ev.steps.length) planCard(flow, ev.steps);
+            $('chatHint').textContent = `执行 ${ev.steps.length} 步`;
+            break;
+          case 'step_start':
+            activeCard = toolCard(flow, ev.title, ev.tool);
+            activeCard.dataset.i = ev.i;
+            $('chatHint').textContent = `${ev.title}…`;
+            break;
+          case 'tool_detail': {
+            const box = (activeCard || flow.lastElementChild);
+            const det = box?.querySelector('.tdetail');
+            if (det) det.innerHTML = (ev.lines || []).map(l => `<div>${esc(l)}</div>`).join('');
+            chatlog.scrollTop = chatlog.scrollHeight;
+            break;
+          }
+          case 'step_end': {
+            const card = flow.querySelector(`.tcard[data-i="${ev.i}"]`) || activeCard;
+            if (card) {
+              card.querySelector('.tstat').className = `tstat ${ev.status === 'ok' ? 'ok' : 'err'}`;
+              card.querySelector('.ttime').textContent = ev.status === 'ok'
+                ? `${((ev.elapsed_ms || 0) / 1000).toFixed(1)}s`
+                : '失败';
+              if (ev.summary) {
+                const det = card.querySelector('.tdetail');
+                const line = document.createElement('div');
+                line.textContent = ev.summary;
+                det.appendChild(line);
+              }
+            }
+            break;
+          }
+          case 'stage':
+            // write_article 内部的阶段：plan/compose/reflect/render
+            miniLine(flow, ev.stage.toUpperCase(), ev.label, ev.stage === 'reflect' ? 'hl' : '');
+            $('chatHint').textContent = ev.label;
+            break;
+          case 'reflection':
+            miniLine(flow, `第 ${ev.reflection.round} 轮自检`, `${ev.reflection.total} 分 · ${ev.reflection.repair_action.toUpperCase()}`, 'hl');
+            $('chatHint').textContent = `第 ${ev.reflection.round} 轮 ${ev.reflection.total} 分`;
+            break;
+          case 'delta':
+            if (ev.kind === 'content') { raw += ev.text; flush(); }
+            break;
+          case 'artifact':
+            if (ev.artifact === 'article') {
+              const art = document.createElement('div');
+              art.className = 'artifact';
+              art.innerHTML = `<div class="ai-ico">文</div>
+                <div class="ai-tx"><b>文章产物页</b><span>${esc(ev.summary || '')}</span></div>
+                <div class="ai-links"><a href="${ev.url}" target="_blank" rel="noopener">打开</a>
+                <a href="/api/articles/${ev.url.split('/').pop()}/md" download>下载 .md</a></div>`;
+              flow.appendChild(art);
+              chatlog.scrollTop = chatlog.scrollHeight;
+            }
+            break;
+          case 'video_plans':
+            plansCards(flow, ev.plans || []);
+            $('chatHint').textContent = '挑一套拍法';
+            break;
+          case 'done_reply':
+            break;
+          case 'error':
+            mdBox.hidden = false;
+            mdBox.innerHTML = `<p style="color:var(--err)">${esc(ev.message)}</p>`;
+            break;
+        }
+      },
+      '/api/chat'
     );
-
-    mdBox.innerHTML = renderMd(raw, false);
-
-    // 产物卡：让"生成完了"变成可点的东西，而不是一段死文字
-    const art = document.createElement('div');
-    art.className = 'artifact';
-    art.innerHTML = `<div class="ai-ico">${intent.style ? '▶' : '文'}</div>
-      <div class="ai-tx"><b>${intent.style ? '动画成品' : '文章初稿'}</b>
-        <span>${done.result.word_count} 字 · ${done.result.rounds.length} 轮 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s</span></div>
-      <a href="${done.url}" target="_blank" rel="noopener">打开</a>`;
-    body.appendChild(art);
-    chatlog.scrollTop = chatlog.scrollHeight;
-
-    $('chatCost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
-    $('chatHint').textContent = '意图识别 → 子 Agent 调度';
+    if (raw) { mdBox.hidden = false; mdBox.innerHTML = renderMd(raw, false); }
+    if (!flow.children.length && !raw) {
+      mdBox.hidden = false;
+      mdBox.innerHTML = '<p class="ph">（无内容返回）</p>';
+    }
+    $('chatHint').textContent = '主 Agent 待命';
   } catch (e) {
+    mdBox.hidden = false;
     mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
     $('chatHint').textContent = '出错了';
   } finally {

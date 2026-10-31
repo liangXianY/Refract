@@ -282,6 +282,94 @@ async def generate(payload: GenerateIn) -> dict[str, str]:
     return {"task_id": task_id}
 
 
+# ---------------------------------------------------------------- 对话主 Agent
+
+
+class ChatIn(BaseModel):
+    input: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/api/chat")
+async def chat(payload: ChatIn) -> dict[str, str]:
+    """对话入口：主 Agent 接管。
+
+    和 /api/generate 的分工：那边是显式板块（用户已选好「文章/视频」），
+    这边用户只说话，做什么由 Supervisor 规划——包括「什么都不做，回一句话」。
+    """
+    if not settings.is_ready:
+        raise HTTPException(400, "未配置 DEEPSEEK_API_KEY，且未开启 LLM_MOCK")
+
+    task_id = uuid.uuid4().hex[:12]
+    task = TaskState(task_id)
+    TASKS[task_id] = task
+    asyncio.create_task(_run_chat(task, task_id, payload.input))
+    return {"task_id": task_id}
+
+
+async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
+    from .agents.memory_keeper import MemoryKeeper
+    from .agents.supervisor import handle_chat
+    from .pipeline import runs
+    from .pipeline.renderer import save_artifact
+    from .schemas import ContentBrief
+
+    started = time.time()
+    task.status = "running"
+    record: dict[str, Any] = {
+        "task_id": task_id,
+        "kind": "chat",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "input": text[:2000],
+        "degraded": False,
+    }
+    try:
+        keeper = MemoryKeeper(memory)
+        result = await handle_chat(task_id=task_id, text=text, llm=llm, keeper=keeper, emit=task.push)
+        record.update({k: v for k, v in result.items() if k != "results"})
+
+        # 对话里写出的文章：补产物页 + 留痕。视频/热点类没有文件产物。
+        results = result.get("results") or []
+        art = next((r for r in results if r.get("tool") == "write_article"), None)
+        if art:
+            r = art["result"]
+            brief = ContentBrief.model_validate(r["brief"])
+            save_artifact(brief, r["body"], task_id, settings.data_dir, f"对话 · {r['word_count']} 字")
+            record["artifact"] = f"/r/{task_id}"
+            runs.save(
+                settings.data_dir,
+                {
+                    **record,
+                    "kind": "article",
+                    "brief": r["brief"],
+                    "body": r["body"],
+                    "provider": "deepseek" if not r["mocked"] else "mock",
+                    "model": r["model"],
+                    "rounds": r["rounds"],
+                    "kept_round": r["kept_round"],
+                    "final_score": r.get("final_score"),
+                    "word_count": r["word_count"],
+                    "elapsed_ms": r["elapsed_ms"],
+                },
+            )
+        # 规划/工具执行的完整轨迹也留一份（复盘主 Agent 决策质量用）
+        record["results"] = [
+            {k: v for k, v in r.items() if k not in ("result", "material")} for r in results
+        ]
+        record["elapsed_ms"] = int((time.time() - started) * 1000)
+        if not art:
+            runs.save(settings.data_dir, record)
+        task.result = {"kind": result.get("kind"), "steps": result.get("steps", [])}
+        task.status = "done"
+    except Exception as exc:
+        task.status = "failed"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+        try:
+            runs.save(settings.data_dir, record)
+        except Exception:
+            pass
+
+
 async def _run(
     task: TaskState,
     user_input: str,
