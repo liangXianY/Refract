@@ -16,17 +16,49 @@ function inlineMd(s) {
 function renderMd(text, withCursor) {
   const out = [];
   let inList = false;
-  for (const rawLine of String(text).split('\n')) {
+  const linesAll = String(text).split('\n');
+  let tableBuf = null;   // {header, rows}
+  const isSep = (l) => /^\s*\|?[\s:|-]*-[-\s:|]*\|?\s*$/.test(l) && l.includes('-') && l.includes('|');
+  const flushTable = () => {
+    if (tableBuf) {
+      const th = tableBuf.header.map(c => `<th>${inlineMd(c)}</th>`).join('');
+      const trs = tableBuf.rows.map(r => '<tr>' + r.map(c => `<td>${inlineMd(c)}</td>`).join('') + '</tr>').join('');
+      out.push(`<table><thead><tr>${th}</tr></thead><tbody>${trs}</tbody></table>`);
+      tableBuf = null;
+    }
+  };
+  for (let li = 0; li < linesAll.length; li++) {
+    const rawLine = linesAll[li];
     const line = rawLine.replace(/\s+$/, '');
-    if (!line.trim()) { if (inList) { out.push('</ul>'); inList = false; } continue; }
+    if (!line.trim()) { if (inList) { out.push('</ul>'); inList = false; } flushTable(); continue; }
+    // 表格：| 单元格 | 行 + 下一行是 |---|---| 分隔
+    if (line.trim().startsWith('|') && li + 1 < linesAll.length && isSep(linesAll[li + 1])) {
+      if (inList) { out.push('</ul>'); inList = false; }
+      tableBuf = { header: line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()), rows: [] };
+      li++;  // 跳过分隔行
+      while (li < linesAll.length && linesAll[li].trim().startsWith('|')) {
+        tableBuf.rows.push(linesAll[li].trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()));
+        li++;
+      }
+      li--; flushTable();
+      continue;
+    }
+    // 图片：真图直接渲染，配图占位渲染成占位卡
+    const mImg = line.trim().match(/^!\[([^\]]*)\]\((https?:[^)]+)\)\s*$/);
+    if (mImg) {
+      if (inList) { out.push('</ul>'); inList = false; } flushTable();
+      out.push(`<figure class="mdimg"><img src="${esc(mImg[2])}" alt="${esc(mImg[1])}" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('figure').style.display='none'"><figcaption>${esc(mImg[1] || '配图')}</figcaption></figure>`);
+      continue;
+    }
     if (line.startsWith('### ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h4>${inlineMd(line.slice(4))}</h4>`); }
     else if (line.startsWith('## ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h3>${inlineMd(line.slice(3))}</h3>`); }
     else if (line.startsWith('# ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h2>${inlineMd(line.slice(2))}</h2>`); }
     else if (line.startsWith('> ')) out.push(`<blockquote>${inlineMd(line.slice(2))}</blockquote>`);
     else if (/^\s*[-*]\s+/.test(line)) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inlineMd(line.replace(/^\s*[-*]\s+/, ''))}</li>`); }
-    else { if (inList) { out.push('</ul>'); inList = false; } out.push(`<p>${inlineMd(line)}</p>`); }
+    else { if (inList) { out.push('</ul>'); inList = false; } flushTable(); out.push(`<p>${inlineMd(line)}</p>`); }
   }
   if (inList) out.push('</ul>');
+  flushTable();
   if (withCursor) out.push('<span class="cursor"></span>');
   return out.join('\n');
 }
@@ -191,8 +223,9 @@ async function sendChat(text) {
 
   addMsg('user', esc(text).replace(/\n/g, '<br/>'));
 
-  const body = addMsg('ai', `<div class="flow" data-flow></div>
-    <div class="md" data-md style="font-size:13.5px" hidden></div>`);
+  // 正文在上，过程卡在下方——阅读顺序应该先看到内容
+  const body = addMsg('ai', `<div class="md" data-md style="font-size:13.5px" hidden></div>
+    <div class="flow" data-flow></div>`);
   const flow = body.querySelector('[data-flow]');
   const mdBox = body.querySelector('[data-md]');
 

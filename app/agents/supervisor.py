@@ -242,6 +242,11 @@ async def _run_web_search(args: dict, llm, keeper, task_id, emit, results) -> di
     }
 
 
+def brief_img_hint(args: dict, body: str) -> str:
+    """给搜图的短提示：优先用用户输入的前 20 字。"""
+    return (str(args.get("input") or "")[:20] or body[:20]).replace("\n", " ")
+
+
 async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.engine import run_pipeline
     from ..pipeline.search import search
@@ -268,8 +273,24 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
         history_hint=keeper.reflect_hint(),
     )
 
-    # 联网搜图配文：正文里有配图占位就搜一次真图，按序分配给占位
+    # 联网搜图配文：
+    # a) 正文里有配图占位（Writer 按引导插的）→ 搜真图按序替换
+    # b) 一个占位都没有（模型没按引导写）→ 主动搜一张插到第一个小节后
+    #    「这篇文章没有图片」就是这么来的——不能指望模型每次都记得插图
     body = result["body"]
+    if not llm.cfg.mock and "](prompt:" not in body and "![" not in body:
+        try:
+            img_res = await search(str(args.get("input") or "")[:80], max_results=4, with_images=True)
+            urls = [i["url"] for i in img_res.images if i.get("url")]
+            if urls:
+                import re as _re
+                heads = list(_re.finditer(r"^## .+$", body, _re.M))
+                insert_at = heads[1].start() if len(heads) > 1 else (
+                    heads[0].end() if heads else len(body))
+                img_md = f"\n\n![配图：{brief_img_hint(args, body)}]({urls[0]})\n"
+                body = body[:insert_at] + img_md + body[insert_at:]
+        except Exception:
+            pass
     if not llm.cfg.mock and "](prompt:" in body:
         try:
             img_res = await search(str(args.get("input") or "")[:80], max_results=5, with_images=True)
