@@ -69,7 +69,8 @@ async def run_pipeline(
 
         await emit({"type": "stage", "stage": "reflect", "round": rn, "label": f"第 {rn} 轮反思校验"})
         refl = await reflect(
-            llm, brief, body, round_no=rn, max_rounds=max_rounds, history_hint=history_hint
+            llm, brief, body, round_no=rn, max_rounds=max_rounds, history_hint=history_hint,
+            prev_total=best[0] if best[0] else None,
         )
         rounds.append(
             {
@@ -88,8 +89,8 @@ async def run_pipeline(
         else:
             no_gain += 1
 
-        # 终止判断
-        if refl.repair_action == "pass":
+        # 终止判断。pass=达标，stop=轮数用尽（可能没达标，引擎会交付历史最高分版）
+        if refl.repair_action in ("pass", "stop"):
             break
         if no_gain >= 2:
             await emit({"type": "note", "text": "连续两轮无改进，停止迭代"})

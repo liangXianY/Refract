@@ -457,11 +457,21 @@ def render_article_page(brief: ContentBrief, body: str, meta_line: str) -> str:
   .kicker{{font-size:11px;letter-spacing:.18em;color:#12a37f;font-weight:700;margin-bottom:14px}}
   h1{{font-size:26px;letter-spacing:-.01em;line-height:1.4;margin:0 0 10px}}
   .meta{{font-size:12px;color:#858783;border-bottom:1px solid #e6e6e2;padding-bottom:18px;margin-bottom:30px}}
-  .body h2{{font-size:19px;margin:34px 0 12px;letter-spacing:-.01em}}
-  .body h3,.body h4{{font-size:16px;margin:26px 0 10px}}
-  .body p{{margin:0 0 16px;font-size:15px}}
-  .body li{{margin:0 0 8px;font-size:15px}}
-  .body strong{{color:#000}}
+  .body{{font-size:15.5px}}
+  .body > p:first-of-type{{font-size:17px;color:#1c1e1c;line-height:1.85;
+    padding-bottom:18px;border-bottom:1px solid #eeeee9;margin-bottom:26px}}
+  .body h2{{font-size:20px;margin:42px 0 16px;letter-spacing:-.01em;position:relative;
+    padding-left:14px;line-height:1.5}}
+  .body h2::before{{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;
+    border-radius:2px;background:#12a37f}}
+  .body h3,.body h4{{font-size:16.5px;margin:28px 0 10px}}
+  .body p{{margin:0 0 18px}}
+  .body li{{margin:0 0 9px}}
+  .body li::marker{{color:#12a37f}}
+  .body strong{{color:#000;font-weight:700}}
+  .body blockquote{{margin:20px 0;padding:12px 18px;border-left:3px solid #12a37f;
+    background:#f6f8f7;border-radius:0 8px 8px 0;color:#3f423f}}
+  .body hr{{border:0;border-top:1px solid #e6e6e2;margin:36px auto;width:64px}}
   footer{{margin-top:52px;padding-top:16px;border-top:1px solid #e6e6e2;
     font-size:11px;color:#a8aaa5;font-family:ui-monospace,Consolas,monospace}}
 </style></head><body><main>

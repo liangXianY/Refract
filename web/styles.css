@@ -508,3 +508,6 @@ footer{
 
 /* 用户消息气泡右对齐后，AI 侧正文宽度照旧；工具卡等仍在 AI 侧 */
 .msg.ai .body{max-width:100%}
+
+/* 反思档位：STOP = 轮数用尽（不同于 PASS=达标） */
+.rcard .act.stop{background:#fdf3e7;color:#c98a1e}

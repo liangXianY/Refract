@@ -79,16 +79,20 @@ def lint(brief: ContentBrief, body: str) -> list[tuple[str, bool]]:
     return out[:6]
 
 
-def decide(total: float, blocking: int, round_no: int, max_rounds: int) -> str:
-    """三档修复动作的判据。
+def decide(total: float, blocking: int, round_no: int, max_rounds: int, prev_total: float | None = None) -> str:
+    """修复档位的判据。pass=达标，refine=可修，replan=方案层面问题，stop=轮数用尽。
 
     阈值是实测校准出来的，不是拍的：
     第一版按 62/82 设，真实模型把正常稿子打成 replan，每篇多付一次规划成本，
     总耗时从 30 秒涨到 115 秒。现在 55/78。
     blocking 只数"硬伤"（字数离谱、大面积漏节），提示类问题不参与决策。
+
+    stop 和 pass 必须分开：轮数用尽时分数不够也得停（成本决策），
+    但不能标成 PASS——56 分显示 PASS 是在骗用户。停了就是停了，
+    交付哪一版由引擎取历史最高分，和这个档位无关。
     """
     if round_no >= max_rounds:
-        return "pass"
+        return "stop"
     if total < 55 or blocking >= 2:
         return "replan"
     if blocking >= 1 or total < 78:
@@ -103,6 +107,7 @@ async def reflect(
     round_no: int = 1,
     max_rounds: int = 2,
     history_hint: str = "",
+    prev_total: float | None = None,  # 上一轮总分：日志里能看出「修订是进步还是退步」
 ) -> Reflection:
     """反思。
 
@@ -116,7 +121,7 @@ async def reflect(
         blocking = sum(1 for _, b in lints if b)
         r.issues = ([t for t, _ in lints] + r.issues)[:5]
         r.recompute_total()
-        r.repair_action = decide(r.total, blocking, round_no, max_rounds)  # type: ignore[assignment]
+        r.repair_action = decide(r.total, blocking, round_no, max_rounds, prev_total)  # type: ignore[assignment]
         return r
 
     try:
@@ -140,7 +145,7 @@ async def reflect(
             round=round_no,
         )
         r.total = 62.0 if blocking else 76.0
-        r.repair_action = decide(r.total, blocking, round_no, max_rounds)  # type: ignore[assignment]
+        r.repair_action = decide(r.total, blocking, round_no, max_rounds, prev_total)  # type: ignore[assignment]
         return r
     scores = {}
     for k, v in (raw.get("scores") or {}).items():
@@ -161,5 +166,5 @@ async def reflect(
         # 有硬伤时压一下分数，避免模型给高分后直接 pass
         if blocking and r.total >= 82:
             r.total = 79.0
-    r.repair_action = decide(r.total, blocking, round_no, max_rounds)  # type: ignore[assignment]
+    r.repair_action = decide(r.total, blocking, round_no, max_rounds, prev_total)  # type: ignore[assignment]
     return r
