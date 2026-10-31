@@ -155,30 +155,18 @@ def _expected_phrases(brief: ContentBrief) -> list[str]:
 
 
 def _drawn_text(html: str) -> str:
-    """把可能被画到画布上的字捞出来，用于统计「画面里到底有多少字」。
+    """统计「可能被画到画布上的中文」的来源池。
 
-    不认 HTML 正文：canvas 全屏铺开时，写在 <div> 里的字根本看不见——
-    那正是「一句话都没说」的来源。
+    曾经的实现是两级择一：先找 fillText('...') 直接调用，凑够 20 个中文就
+    提前返回——实测被它坑了：Opus 把文字集中在少数长字符串/数组变量里
+    （fillText 只调 10 次、540 个中文），第一级只捞到 24 个就提前返回，
+    闸门把一份 540 字的片子误判成「一个字都没有」。
 
-    两级提取。第一级直接找 fillText('...')。
-    但模型常先封装一个 drawText() 再在里面调 fillText，这时第一级是空的，
-    要退一步用整段 script（去掉注释）。
-
-    为什么不精确解析字符串字面量：试过，纯粹的自写词法器在
-    minified 代码上很容易错位，把中文串整段跳过。宁可粗一点，
-    反正后面还有 phrase_cover 那道闸兜内容相关性。
+    现在的口径：script 区去掉注释后全部内容。中文字符只可能出现在
+    字符串字面量（要画的文案）或注释（已去掉）里，变量名不会是中文，
+    所以「去注释的 script」就是文案全集，简单且不会少算。
     """
-    direct = "".join(
-        m[1]
-        for m in re.findall(
-            r"(?:fillText|strokeText)\s*\(\s*(['\"`])((?:\\.|(?!\1).)*?)\1", html, re.S
-        )
-    )
-    if sum(1 for ch in direct if "\u4e00" <= ch <= "\u9fff") >= 20:
-        return direct
-
-    # 注意结尾的 |$：被截断的文件没有 </script>，仍然要把它已有的内容算进来，
-    # 否则「文字 0 个」这个判断会在截断时永远成立，掩盖真实原因
+    # 结尾的 |$：被截断的文件没有 </script>，仍要把已有内容算进来
     scripts = "\n".join(re.findall(r"<script[^>]*>(.*?)(?:</script>|$)", html, re.S))
     scripts = re.sub(r"/\*.*?\*/", "", scripts, flags=re.S)  # 块注释
     scripts = re.sub(r"//[^\n]*", "", scripts)  # 行注释
