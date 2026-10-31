@@ -28,8 +28,9 @@ MemoryHigh=560M
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/app/content-agent/data
+# 不要加 ProtectHome=read-only：应用目录就在 /home 下，
+# Python 需要写 __pycache__，只读会导致启动告警
+ReadWritePaths=/home/ubuntu/app/content-agent
 
 [Install]
 WantedBy=multi-user.target
