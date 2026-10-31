@@ -1,0 +1,11 @@
+# 脚本和 unit 文件必须是 LF，否则 Linux 上执行报 "bad interpreter: ^M"
+*.sh        text eol=lf
+*.service   text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.txt       text eol=lf
+*.ps1       text eol=crlf
