@@ -82,6 +82,7 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 
 可用工具：
 - fetch_url {"url": "..."}          解析链接内容。GitHub 仓库会连 star 数、语言、README 一起返回；普通网页抽正文
+- web_search {"query": "..."}       联网搜索，返回带来源链接的最新资料；写时效性/热点/对比类内容先用它取素材
 - github_trending {"days": 7}       拉近 N 天 GitHub 上 star 涨得最快的新仓库
 - write_article {"input": "...", "platform": "wechat|xiaohongshu|video", "words": "short|medium|long"}
                                     写一篇可发布的文案。走完整的规划-写作-自检迭代，耗时 1-2 分钟。正文会流式输出，不需要你转述
@@ -93,7 +94,8 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 2. 用户没提视频就不要安排视频，没提写稿就不要安排写稿。安排任务只看用户明说的
 3. 「看看热点」「最近有什么火的」 → github_trending
 4. 「分析/看看/读一下 + 链接」 → fetch_url
-5. 「写一篇/出文案/发公众号」 → write_article，platform 按用户说的，默认 wechat
+5. 「写一篇/出文案/发公众号」 → write_article，platform 按用户说的，默认 wechat；
+   内容涉及时效信息（最近发生了什么/价格/版本/新闻）时，前面加一步 web_search
 6. 明确要视频 → video_plans
 7. 复合需求可以拆多步（先拉热点再写稿就是两步），但不超过 3 步，按依赖排序
 8. write_article 的 input 要把用户的完整要求写清楚，不能只写四个字
@@ -190,7 +192,7 @@ async def make_plan(llm: LLMClient, text: str) -> Plan:
 # 工具不直接碰 HTTP 层——产物保存、留痕是 main 的事，这里只产出数据。
 
 
-async def _run_fetch_url(args: dict, llm, keeper, task_id, emit) -> dict:
+async def _run_fetch_url(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.fetch import FetchError, fetch_url, to_prompt_material
 
     url = str(args.get("url") or "").strip()
@@ -208,7 +210,7 @@ async def _run_fetch_url(args: dict, llm, keeper, task_id, emit) -> dict:
     }
 
 
-async def _run_github_trending(args: dict, llm, keeper, task_id, emit) -> dict:
+async def _run_github_trending(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.fetch import FetchError, github_trending
 
     items = await github_trending(days=int(args.get("days") or 7), limit=int(args.get("limit") or 8))
@@ -222,12 +224,41 @@ async def _run_github_trending(args: dict, llm, keeper, task_id, emit) -> dict:
     }
 
 
-async def _run_write_article(args: dict, llm, keeper, task_id, emit) -> dict:
+async def _run_web_search(args: dict, llm, keeper, task_id, emit, results) -> dict:
+    from ..pipeline.search import SearchError, search, to_material
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        raise ToolError("缺 query")
+    res = await search(query, max_results=int(args.get("max_results") or 5))
+    await emit({"type": "tool_detail", "lines": [
+        f"{r['title'][:44]} — {r['url'][:44]}" for r in res.items[:5]
+    ]})
+    return {
+        "tool": "web_search",
+        "summary": f"「{query[:24]}」搜到 {len(res.items)} 条资料",
+        "query": query,
+        "material": to_material(res),  # 带 URL 来源，写作时事实点可溯源
+    }
+
+
+async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.engine import run_pipeline
+    from ..pipeline.search import search
+
+    input_text = str(args.get("input") or "")
+    # 前序工具的素材自动注入：搜索结果 / 链接正文，都带来源
+    extras = [r["material"] for r in results if r.get("material")]
+    if extras:
+        input_text = (
+            input_text
+            + "\n\n【检索素材（含来源链接，引用时必须标注）】\n"
+            + "\n\n".join(extras)
+        )
 
     result = await run_pipeline(
         task_id=task_id,
-        user_input=str(args.get("input") or ""),
+        user_input=input_text,
         platform=str(args.get("platform") or "wechat"),
         llm=llm,
         words=str(args.get("words") or "medium"),
@@ -236,6 +267,23 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit) -> dict:
         persona=keeper.persona_profile(),
         history_hint=keeper.reflect_hint(),
     )
+
+    # 联网搜图配文：正文里有配图占位就搜一次真图，按序分配给占位
+    body = result["body"]
+    if not llm.cfg.mock and "](prompt:" in body:
+        try:
+            img_res = await search(str(args.get("input") or "")[:80], max_results=5, with_images=True)
+            urls = iter([i["url"] for i in img_res.images])
+            import re as _re
+            body = _re.sub(
+                r"!\[([^\]]*)\]\(prompt:[^)]*\)",
+                lambda m: f"![{m.group(1)}]({u})" if (u := next(urls, None)) else m.group(0),
+                body,
+            )
+        except Exception:
+            pass  # 搜图失败保占位，不阻塞出稿
+
+    result["body"] = body
     return {
         "tool": "write_article",
         "summary": f"{result['word_count']} 字 · {len(result['rounds'])} 轮 · 最终 {result.get('final_score')} 分",
@@ -243,7 +291,7 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit) -> dict:
     }
 
 
-async def _run_video_plans(args: dict, llm, keeper, task_id, emit) -> dict:
+async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.director import recommend_plans
     from ..pipeline.brief import plan as plan_brief
 
@@ -257,7 +305,7 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit) -> dict:
     }
 
 
-async def _run_memory_recall(args: dict, llm, keeper, task_id, emit) -> dict:
+async def _run_memory_recall(args: dict, llm, keeper, task_id, emit, results) -> dict:
     return {
         "tool": "memory_recall",
         "summary": f"{len(keeper.recall())} 条记忆",
@@ -267,6 +315,7 @@ async def _run_memory_recall(args: dict, llm, keeper, task_id, emit) -> dict:
 
 TOOLS: dict[str, dict] = {
     "fetch_url": {"title": "解析链接", "runner": _run_fetch_url},
+    "web_search": {"title": "联网搜索", "runner": _run_web_search},
     "github_trending": {"title": "拉 GitHub 热点", "runner": _run_github_trending},
     "write_article": {"title": "写文章（规划-写作-反思）", "runner": _run_write_article},
     "video_plans": {"title": "出视频方案", "runner": _run_video_plans},
@@ -325,7 +374,7 @@ async def handle_chat(
         await emit({"type": "step_start", "i": i, "tool": step.tool, "title": step.title or spec["title"]})
         ts = time.time()
         try:
-            out = await spec["runner"](step.args, llm, keeper, task_id, emit)
+            out = await spec["runner"](step.args, llm, keeper, task_id, emit, results)
             out["elapsed_ms"] = int((time.time() - ts) * 1000)
             out["title"] = step.title
             results.append(out)

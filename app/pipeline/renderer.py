@@ -86,6 +86,22 @@ def md_to_html(md: str) -> str:
                 flush_table()
                 continue
 
+        # 真图片：![说明](https://...) —— 联网搜到的图。no-referrer 防盗链绕过，
+        # 加载失败整块隐藏（搜到的图可能有失效/防盗链，别让裂图毁掉版面）
+        m_real = re.match(r"^!\[([^\]]*)\]\((https?://[^)]+)\)\s*$", line.strip())
+        if m_real:
+            close_list()
+            flush_table()
+            alt = _inline_md(m_real.group(1)) or "配图"
+            out.append(
+                '<figure class="imgreal"><img src="'
+                + _inline_md(m_real.group(2))
+                + '" alt="' + alt + '" loading="lazy" referrerpolicy="no-referrer" '
+                + 'onerror="this.closest(\'figure\').style.display=\'none\'">'
+                + "<figcaption>" + alt + "</figcaption></figure>"
+            )
+            continue
+
         # 配图占位：![说明](prompt: 生成提示词)
         m_img = re.match(r"^!\[([^\]]*)\]\((prompt:.+)\)\s*$", line.strip())
         if m_img:
@@ -541,6 +557,9 @@ def render_article_page(brief: ContentBrief, body: str, meta_line: str) -> str:
   .body figure.imgslot{{margin:24px 0;padding:14px 16px;border:1px dashed #c8d6d0;
     border-radius:10px;background:#f8faf9}}
   .body figure.imgslot figcaption{{font-size:13px;font-weight:600;color:#0d7a5f;margin-bottom:6px}}
+  .body figure.imgreal{{margin:26px 0}}
+  .body figure.imgreal img{{width:100%;border-radius:10px;border:1px solid #e6e6e2;display:block}}
+  .body figure.imgreal figcaption{{font-size:11px;color:#a8aaa5;margin-top:7px;text-align:center}}
   .body figure.imgslot .imgprompt{{font-size:11.5px;color:#858783;font-family:ui-monospace,Consolas,monospace;
     line-height:1.7;word-break:break-all}}
   footer{{margin-top:52px;padding-top:16px;border-top:1px solid #e6e6e2;
