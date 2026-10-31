@@ -38,6 +38,15 @@ nav{
 }
 .brand h1{font-size:15px;font-weight:800;letter-spacing:-.01em}
 .brand span{font-size:10.5px;color:var(--dim);letter-spacing:.12em;margin-left:3px}
+.modes{display:flex;gap:2px;background:var(--line2);padding:3px;border-radius:9px}
+.modes button{
+  padding:6px 16px;border:0;border-radius:7px;cursor:pointer;font-family:inherit;
+  font-size:12px;color:var(--muted);background:transparent;transition:.16s;
+}
+.modes button.on{background:#fff;color:var(--ink);font-weight:600;
+  box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.modes button:hover:not(.on){color:var(--ink2)}
+
 .navlinks{display:flex;align-items:center;gap:26px;font-size:12.5px;color:var(--ink2)}
 .navlinks a{color:inherit;text-decoration:none;transition:.18s}
 .navlinks a:hover{color:var(--accent)}
@@ -64,17 +73,21 @@ nav{
 .hero p{margin-top:10px;font-size:13px;line-height:1.75;color:var(--muted);max-width:46em}
 
 /* ---------- 工作台 ---------- */
-main{
-  flex:1;min-height:0;display:grid;grid-template-columns:392px minmax(0,1fr);
-  gap:20px;padding:0 40px 16px;max-width:1600px;margin:0 auto;width:100%;
-}
-.panel{
+/* ---------- 三个板块 ---------- */
+.mode-panel{display:none;flex:1;min-height:0;padding:0 40px 16px;
+  max-width:1600px;margin:0 auto;width:100%}
+.mode-panel.on{display:block}
+
+.split{display:grid;grid-template-columns:392px minmax(0,1fr);gap:20px;height:100%}
+.side{
   background:var(--surface);border:1px solid var(--line);border-radius:14px;
-  min-height:0;display:flex;flex-direction:column;overflow:hidden;
+  padding:20px;overflow-y:auto;display:flex;flex-direction:column;min-height:0;
 }
-.panel.input{padding:20px;overflow-y:auto}
-.panel.input > *{flex:none}
-.panel.output{padding:0}
+.side > *{flex:none}
+.work{
+  background:var(--surface);border:1px solid var(--line);border-radius:14px;
+  display:flex;flex-direction:column;overflow:hidden;min-height:0;
+}
 
 .lb{font-size:10.5px;font-weight:700;letter-spacing:.14em;color:var(--dim);
   text-transform:uppercase;margin-bottom:9px;display:block}
@@ -109,8 +122,16 @@ textarea::placeholder{color:var(--muted)}
   cursor:pointer;font-family:inherit;font-size:10.5px;color:var(--muted);transition:.16s;
   display:flex;flex-direction:column;align-items:center;gap:5px;
 }
-.styles button i{width:26px;height:16px;border-radius:3px;display:block;
-  border:1px solid rgba(0,0,0,.14);box-shadow:inset 0 0 0 1px rgba(0,0,0,.03)}
+.styles button i{width:30px;height:18px;border-radius:4px;display:flex;align-items:center;
+  justify-content:center;border:1px solid rgba(0,0,0,.14);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.03)}
+.styles button i::after{content:"";width:7px;height:7px;border-radius:50%;display:block}
+.sw-min::after{background:#111}
+.sw-apple::after{background:#0071e3}
+.sw-edit::after{background:#b23a1f;border-radius:1px !important;width:8px;height:2px}
+.sw-tech::after{background:#4ade80}
+.sw-sketch::after{background:#a98a5c;border-radius:1px !important}
+.sw-auto::after{background:linear-gradient(135deg,#12a37f,#9a7bff)}
 .styles button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--ink);font-weight:600}
 .styles button:hover{border-color:#cfcfc8}
 .sw-min{background:#fff}
@@ -261,4 +282,85 @@ footer{
   footer{padding:0 16px}
   .panel.input{max-height:46vh}
   .stages{display:none}
+}
+
+
+/* ---------- 会话 ---------- */
+.chatwrap{height:100%;display:flex;flex-direction:column;max-width:880px;margin:0 auto}
+.chatlog{flex:1;min-height:0;overflow-y:auto;padding:26px 0 10px}
+.chatbar{flex:none;padding:10px 0 2px}
+
+.chatempty{text-align:center;padding:60px 20px}
+.chatempty .ce-ico{width:42px;height:42px;border-radius:11px;background:var(--ink);
+  color:#fff;display:grid;place-items:center;margin:0 auto 20px;font-weight:800;font-size:16px}
+.chatempty h3{font-size:16px;font-weight:800;margin-bottom:10px}
+.chatempty p{font-size:12.5px;line-height:1.85;color:var(--muted)}
+.ce-tips{display:flex;gap:8px;justify-content:center;margin-top:22px;flex-wrap:wrap}
+.ce-tips button{
+  font-size:12px;padding:8px 15px;border-radius:99px;border:1px solid var(--line);
+  background:#fff;color:var(--ink2);cursor:pointer;font-family:inherit;transition:.16s;
+}
+.ce-tips button:hover{border-color:var(--accent);color:var(--accent)}
+
+.msg{display:flex;gap:13px;margin-bottom:24px;animation:fadeUp .32s ease}
+.msg .av{width:27px;height:27px;border-radius:8px;flex:none;display:grid;place-items:center;
+  font-size:11px;font-weight:800}
+.msg.user .av{background:var(--line2);color:var(--ink2)}
+.msg.ai .av{background:var(--ink);color:#fff}
+.msg .body{flex:1;min-width:0;font-size:13.5px;line-height:1.9;color:var(--ink2)}
+.msg.user .body{color:var(--ink);font-weight:500}
+
+.intent{display:inline-flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;
+  padding:4px 11px;border-radius:99px;background:var(--accent-soft);color:#0d7a5f;
+  margin-bottom:11px;letter-spacing:.02em}
+.intent i{width:5px;height:5px;border-radius:50%;background:var(--accent);display:block}
+
+.chatinput{
+  display:flex;align-items:flex-end;gap:8px;border:1px solid var(--line);
+  border-radius:14px;padding:9px 9px 9px 15px;background:#fff;
+  box-shadow:0 10px 28px -22px rgba(0,0,0,.35);transition:.18s;
+}
+.chatinput:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.chatinput textarea{
+  flex:1;border:0;background:transparent;resize:none;height:24px;max-height:120px;
+  padding:0;font-size:13.5px;line-height:24px;outline:none;color:var(--ink);
+}
+.chatinput textarea::placeholder{color:var(--dim)}
+.chatinput button{
+  width:32px;height:32px;flex:none;border-radius:50%;border:0;cursor:pointer;
+  background:var(--ink);color:#fff;font-size:15px;line-height:1;transition:.18s;
+}
+.chatinput button:hover{background:var(--accent)}
+.chatinput button:disabled{opacity:.35;cursor:not-allowed}
+
+.chatmeta{display:flex;justify-content:space-between;padding:8px 4px 0;
+  font-size:10.5px;color:var(--dim);letter-spacing:.02em}
+
+/* 会话里的产物卡 */
+.artifact{margin-top:14px;border:1px solid var(--line);border-radius:10px;
+  padding:13px 15px;background:var(--bg);display:flex;align-items:center;gap:12px}
+.artifact .ai-ico{width:30px;height:30px;border-radius:8px;background:#fff;
+  border:1px solid var(--line);display:grid;place-items:center;font-size:12px;flex:none}
+.artifact .ai-tx{flex:1;min-width:0}
+.artifact .ai-tx b{font-size:12.5px;font-weight:700;display:block;margin-bottom:2px}
+.artifact .ai-tx span{font-size:10.5px;color:var(--dim);font-family:var(--mono)}
+.artifact a{font-size:11px;font-weight:600;color:var(--accent);text-decoration:none;
+  padding:6px 12px;border:1px solid var(--accent-soft);border-radius:7px;background:var(--accent-soft)}
+
+/* ---------- 分镜 ---------- */
+.storyboard{margin-top:18px;padding-top:16px;border-top:1px solid var(--line2)}
+.sbt{font-size:10.5px;font-weight:700;letter-spacing:.14em;color:var(--dim);margin-bottom:10px}
+.sbl{display:flex;flex-direction:column;gap:6px;max-height:150px;overflow-y:auto}
+.sb-item{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--ink2);
+  padding:6px 8px;border-radius:6px;background:var(--bg)}
+.sb-item b{font-family:var(--mono);font-size:9.5px;color:var(--accent);flex:none;width:26px}
+
+#playerBox{height:100%;display:flex;flex-direction:column;gap:12px}
+#playerBox iframe{flex:1;width:100%;border:1px solid var(--line);border-radius:10px;
+  background:#fff;min-height:300px}
+
+@media(max-width:1080px){
+  .mode-panel{padding:0 16px 12px}
+  .split{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  .modes button{padding:6px 10px;font-size:11px}
 }

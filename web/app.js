@@ -1,374 +1,415 @@
-/* 前端逻辑：SSE 流式接收，四段状态机。
-   刻意不引框架——这个页面只有四块状态，React 的收益不如多一层构建成本。 */
+/* Refract 前端：三个板块共用一套任务执行，按意图分流。
+   会话走意图识别 → 派发子 Agent；文章/视频是显式入口，直达对应 Agent。 */
 
 const $ = (id) => document.getElementById(id);
-const inputEl = $('input');
-const goEl = $('go');
-const mdEl = $('md');
-const thinkEl = $('think');
-const thinkTextEl = $('thinkText');
-const briefEl = $('brief');
-const stagesEl = $('stages');
-const reflectListEl = $('reflectList');
-const previewBox = $('previewBox');
-const hintEl = $('hint');
 
-let platform = 'wechat';
-let vstyle = 'auto';
-let words = 'medium';
-let es = null;
-let raw = '';
-let reasoning = '';
-let pending = false;
-let reflectCount = 0;
-let stageOrder = ['plan', 'compose', 'reflect', 'render'];
-
-/* ---------------- 基础工具 ---------------- */
+/* ============================ 通用 ============================ */
 
 function esc(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-
 function inlineMd(s) {
-  return esc(s)
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`(.+?)`/g, '<code>$1</code>');
+  return esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`(.+?)`/g, '<code>$1</code>');
 }
 
-/** 够用的 Markdown → HTML。流式渲染时每帧全量重排，所以必须够快。 */
+/** 够用的 Markdown 渲染，流式每帧全量重排，所以要快 */
 function renderMd(text, withCursor) {
-  const lines = text.split('\n');
   const out = [];
   let inList = false;
-  for (const rawLine of lines) {
+  for (const rawLine of String(text).split('\n')) {
     const line = rawLine.replace(/\s+$/, '');
-    if (!line.trim()) {
-      if (inList) { out.push('</ul>'); inList = false; }
-      continue;
-    }
-    if (line.startsWith('### ')) {
-      if (inList) { out.push('</ul>'); inList = false; }
-      out.push(`<h4>${inlineMd(line.slice(4))}</h4>`);
-    } else if (line.startsWith('## ')) {
-      if (inList) { out.push('</ul>'); inList = false; }
-      out.push(`<h3>${inlineMd(line.slice(3))}</h3>`);
-    } else if (line.startsWith('# ')) {
-      if (inList) { out.push('</ul>'); inList = false; }
-      out.push(`<h2>${inlineMd(line.slice(2))}</h2>`);
-    } else if (line.startsWith('> ')) {
-      out.push(`<blockquote>${inlineMd(line.slice(2))}</blockquote>`);
-    } else if (/^\s*[-*]\s+/.test(line)) {
-      if (!inList) { out.push('<ul>'); inList = true; }
-      out.push(`<li>${inlineMd(line.replace(/^\s*[-*]\s+/, ''))}</li>`);
-    } else {
-      if (inList) { out.push('</ul>'); inList = false; }
-      out.push(`<p>${inlineMd(line)}</p>`);
-    }
+    if (!line.trim()) { if (inList) { out.push('</ul>'); inList = false; } continue; }
+    if (line.startsWith('### ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h4>${inlineMd(line.slice(4))}</h4>`); }
+    else if (line.startsWith('## ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h3>${inlineMd(line.slice(3))}</h3>`); }
+    else if (line.startsWith('# ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h2>${inlineMd(line.slice(2))}</h2>`); }
+    else if (line.startsWith('> ')) out.push(`<blockquote>${inlineMd(line.slice(2))}</blockquote>`);
+    else if (/^\s*[-*]\s+/.test(line)) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inlineMd(line.replace(/^\s*[-*]\s+/, ''))}</li>`); }
+    else { if (inList) { out.push('</ul>'); inList = false; } out.push(`<p>${inlineMd(line)}</p>`); }
   }
   if (inList) out.push('</ul>');
   if (withCursor) out.push('<span class="cursor"></span>');
   return out.join('\n');
 }
 
-function scheduleRender() {
-  if (pending) return;
-  pending = true;
-  requestAnimationFrame(() => {
-    pending = false;
-    mdEl.innerHTML = renderMd(raw, true);
-    mdEl.parentElement.scrollTop = mdEl.parentElement.scrollHeight;
+/** 起任务 + 读 SSE。onEvent 收到每一个事件。 */
+async function runTask(payload, onEvent) {
+  const resp = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try { detail = (await resp.json()).detail || detail; } catch { /* 保持原样 */ }
+    throw new Error(detail);
+  }
+  const { task_id } = await resp.json();
+
+  return new Promise((resolve, reject) => {
+    const es = new EventSource(`/api/tasks/${task_id}/events`);
+    es.onmessage = (m) => {
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { return; }
+      onEvent?.(ev);
+      if (ev.type === 'done') { es.close(); resolve(ev); }
+      if (ev.type === 'error') { es.close(); reject(new Error(ev.message)); }
+    };
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) reject(new Error('连接中断'));
+    };
   });
 }
 
-/* ---------------- 状态机 ---------------- */
+/* ============================ 模式切换 ============================ */
 
-function setStage(name, label) {
-  const i = stageOrder.indexOf(name);
-  stagesEl.querySelectorAll('.stage').forEach((el, k) => {
-    el.classList.toggle('done', k < i);
-    el.classList.toggle('on', k === i);
-    if (k === i && label) el.querySelector('em').textContent = label;
+const MODES = ['chat', 'article', 'video'];
+
+function switchMode(mode) {
+  MODES.forEach(m => {
+    $(`mode${m[0].toUpperCase()}${m.slice(1)}`).classList.toggle('on', m === mode);
   });
+  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  if (mode === 'chat') setTimeout(() => $('chatInput').focus(), 60);
 }
 
-function setThink(text, busy) {
-  thinkTextEl.textContent = text;
-  thinkEl.classList.toggle('busy', !!busy);
-}
+document.querySelectorAll('#modes button').forEach(btn => {
+  btn.onclick = () => switchMode(btn.dataset.mode);
+});
 
-function resetUI() {
-  raw = ''; reasoning = ''; reflectCount = 0;
-  $('empty').hidden = true;
-  thinkEl.hidden = false;
-  mdEl.innerHTML = '<p class="ph">正在拆解输入…</p>';
-  briefEl.classList.remove('on');
-  briefEl.innerHTML = '';
-  reflectListEl.innerHTML = '<p class="ph">每次执行后，反思会给出分维度评分、问题清单和修复动作。</p>';
-  $('rCount').textContent = '0';
-  previewBox.innerHTML = '<p class="ph">生成完成后，这里可以直接播放动画成品。</p>';
-  stagesEl.querySelectorAll('.stage').forEach(el => {
-    el.className = 'stage';
-    el.querySelector('em').textContent = {plan:'拆解输入',compose:'按大纲写作',reflect:'校验与评分',render:'生成动画'}[el.dataset.s];
-  });
-  setThink('处理中', true);
-}
+/* ============================ 会话 ============================ */
 
-function renderBrief(b) {
-  const tags = [
-    b.platform, b.audience, `${b.word_limit} 字`, b.tone
-  ].filter(Boolean).map(t => `<span class="tag">${esc(String(t))}</span>`).join('');
-  const outline = (b.outline || []).map(s => `<li>${esc(s.heading)}</li>`).join('');
-  const facts = (b.facts || []).map(f =>
-    `<div class="fact ${f.source ? '' : 'warn'}">${f.source ? '✓' : '⚠'} ${esc(f.claim)}${f.source ? '（' + esc(f.source) + '）' : '（无出处）'}</div>`
-  ).join('');
-  briefEl.innerHTML = `
-    <div class="bt">${esc(b.topic)}</div>
-    <div class="bd">${esc(b.angle || '')}</div>
-    <div class="tags">${tags}</div>
-    <ol>${outline}</ol>
-    ${facts}`;
-  briefEl.classList.add('on');
-}
+const chatlog = $('chatlog');
 
-function addReflection(r) {
-  reflectCount += 1;
-  $('rCount').textContent = String(reflectCount);
-  const scores = Object.entries(r.scores || {}).map(([k, v]) => `
-    <div class="srow">
-      <span>${esc(k)}</span>
-      <span class="sbar"><i style="--w:${Math.max(0, Math.min(100, v))}%"></i></span>
-      <span class="sval">${v}</span>
-    </div>`).join('');
-  const issues = (r.issues || []).map(i => `<div>${esc(i)}</div>`).join('');
+function addMsg(role, html) {
+  $('chatempty')?.remove();
   const el = document.createElement('div');
-  el.className = 'rcard';
-  el.innerHTML = `
-    <div class="rh">
-      <b>第 ${r.round} 轮</b>
-      <span class="act ${r.repair_action}">${r.repair_action.toUpperCase()}</span>
-    </div>
-    ${scores}
-    ${issues ? `<div class="iss">${issues}</div>` : ''}
-    <div class="rtotal">综合 ${r.total} / 100</div>`;
-  if (reflectListEl.querySelector('.ph')) reflectListEl.innerHTML = '';
-  reflectListEl.prepend(el);
+  el.className = `msg ${role}`;
+  el.innerHTML = `<div class="av">${role === 'user' ? '你' : 'R'}</div><div class="body">${html}</div>`;
+  chatlog.appendChild(el);
+  chatlog.scrollTop = chatlog.scrollHeight;
+  return el.querySelector('.body');
 }
 
-function showPreview(url, result) {
-  const rows = (result.rounds || []).map(x => `第${x.round}轮 ${x.total}分·${x.action}`).join('  ');
-  previewBox.innerHTML = `
-    <div class="prow">
-      <a href="${url}" target="_blank" rel="noopener">新窗口打开</a>
-      <button id="reloadFrame">重播</button>
-      <span class="meta">${esc(rows)}</span>
-    </div>
-    <iframe src="${url}" title="动画产物"></iframe>`;
-  $('reloadFrame').onclick = () => {
-    const f = previewBox.querySelector('iframe');
-    f.src = f.src;
+/** 意图识别。
+ *  现在是关键词规则——够用，但要诚实：真正的意图识别应该走模型。
+ *  单独抽一层是因为它决定「派给哪个子 Agent」，是路由核心。 */
+function detectIntent(text) {
+  const t = text.toLowerCase();
+  if (/(视频|短片|动画|分镜|镜头|video)/.test(t)) return { agent: 'Director', label: '视频生成', style: 'auto' };
+  if (/(链接|网址|https?:\/\/|抓取|爬)/.test(t)) return { agent: 'Researcher', label: '链接解析', style: null };
+  if (/(小红书|xhs)/.test(t)) return { agent: 'Writer', label: '文章生成 · 小红书', platform: 'xiaohongshu' };
+  return { agent: 'Writer', label: '文章生成 · 公众号', platform: 'wechat' };
+}
+
+let chatting = false;
+
+async function sendChat(text) {
+  text = (text || '').trim();
+  if (!text || chatting) return;
+  chatting = true;
+  $('chatSend').disabled = true;
+  $('chatInput').value = '';
+  autosize($('chatInput'));
+
+  addMsg('user', esc(text).replace(/\n/g, '<br/>'));
+
+  const intent = detectIntent(text);
+  const body = addMsg('ai', `<div class="intent"><i></i>意图：${intent.label} · 派给 ${intent.agent}</div>
+    <div class="md" data-md style="font-size:13.5px"><p class="ph">正在拆解…</p></div>`);
+  const mdBox = body.querySelector('[data-md]');
+
+  if (intent.agent === 'Researcher') {
+    mdBox.innerHTML = '<p>链接解析还没接上（P1 剩余部分）。当前只接受文本输入，抓取层需要 <code>trafilatura</code> + 无头浏览器截图，会单独做。</p>';
+    $('chatHint').textContent = 'Researcher · 未实现';
+    chatting = false;
+    $('chatSend').disabled = false;
+    return;
+  }
+
+  let raw = '';
+  let pending = false;
+  const flush = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      mdBox.innerHTML = renderMd(raw, true);
+      chatlog.scrollTop = chatlog.scrollHeight;
+    });
   };
-}
 
-/* ---------------- 事件分发 ---------------- */
-
-function handleEvent(ev) {
-  switch (ev.type) {
-    case 'stage':
-      setStage(ev.stage, ev.label);
-      setThink(ev.label, true);
-      break;
-
-    case 'brief':
-      renderBrief(ev.brief);
-      if (!raw) mdEl.innerHTML = '<p class="ph">大纲已就绪，开始写作…</p>';
-      break;
-
-    case 'round_start':
-      raw = '';
-      reasoning = '';
-      if (ev.round > 1) {
-        mdEl.innerHTML = '<p class="ph">按上一轮的问题重写…</p>';
-        setThink(`第 ${ev.round} 轮重写`, true);
+  try {
+    $('chatHint').textContent = `${intent.agent} 执行中…`;
+    const done = await runTask(
+      { input: text, platform: intent.platform || 'wechat', style: intent.style || 'auto', words: 'medium' },
+      (ev) => {
+        if (ev.type === 'delta' && ev.kind === 'content') { raw += ev.text; flush(); }
+        if (ev.type === 'stage') $('chatHint').textContent = `${intent.agent} · ${ev.label}`;
+        if (ev.type === 'reflection') $('chatHint').textContent = `${intent.agent} · 第 ${ev.reflection.round} 轮 ${ev.reflection.total} 分`;
       }
-      break;
+    );
 
-    case 'delta':
-      if (ev.kind === 'reasoning') {
-        reasoning += ev.text;
-        setThink('思考：' + reasoning.slice(-90).replace(/\n/g, ' '), true);
-      } else {
-        raw += ev.text;
-        scheduleRender();
-      }
-      break;
+    mdBox.innerHTML = renderMd(raw, false);
 
-    case 'reflection':
-      addReflection(ev.reflection);
-      break;
+    // 产物卡：让"生成完了"变成可点的东西，而不是一段死文字
+    const art = document.createElement('div');
+    art.className = 'artifact';
+    art.innerHTML = `<div class="ai-ico">${intent.style ? '▶' : '文'}</div>
+      <div class="ai-tx"><b>${intent.style ? '动画成品' : '文章初稿'}</b>
+        <span>${done.result.word_count} 字 · ${done.result.rounds.length} 轮 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s</span></div>
+      <a href="${done.url}" target="_blank" rel="noopener">打开</a>`;
+    body.appendChild(art);
+    chatlog.scrollTop = chatlog.scrollHeight;
 
-    case 'note':
-      setThink(ev.text, true);
-      break;
-
-    case 'done':
-      setStage('render', '完成');
-      stagesEl.querySelectorAll('.stage').forEach(el => {
-        el.classList.remove('on');
-        el.classList.add('done');
-      });
-      setThink(`完成 · ${resultLine(ev.result)}`, false);
-      showPreview(ev.url, ev.result);
-      $('cost').textContent = `${ev.result.word_count} 字 · 约 ${ev.result.tokens} tokens`;
-      goEl.disabled = false;
-      goEl.textContent = '再生成一篇';
-      if (es) { es.close(); es = null; }
-      break;
-
-    case 'error':
-      setThink('失败：' + ev.message, false);
-      mdEl.innerHTML = `<p class="ph" style="color:#ff6b6b">${esc(ev.message)}</p>`;
-      goEl.disabled = false;
-      goEl.textContent = '重试';
-      if (es) { es.close(); es = null; }
-      break;
+    $('chatCost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
+    $('chatHint').textContent = '意图识别 → 子 Agent 调度';
+  } catch (e) {
+    mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
+    $('chatHint').textContent = '出错了';
+  } finally {
+    chatting = false;
+    $('chatSend').disabled = false;
   }
 }
 
-function resultLine(r) {
-  const sec = (r.elapsed_ms / 1000).toFixed(1);
-  return `${r.mocked ? 'mock' : r.model} · ${r.rounds.length} 轮 · ${sec}s`;
+function autosize(el) {
+  el.style.height = '24px';
+  el.style.height = Math.min(120, el.scrollHeight) + 'px';
 }
 
-/* ---------------- 交互 ---------------- */
-
-document.querySelectorAll('#platform button').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('#platform button').forEach(b => b.classList.remove('on'));
-    btn.classList.add('on');
-    platform = btn.dataset.p;
-  };
+$('chatInput').addEventListener('input', (e) => autosize(e.target));
+$('chatInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(e.target.value); }
+});
+$('chatSend').onclick = () => sendChat($('chatInput').value);
+document.querySelectorAll('.ce-tips button').forEach(b => {
+  b.onclick = () => { $('chatInput').value = b.dataset.tip; autosize($('chatInput')); $('chatInput').focus(); };
 });
 
-document.querySelectorAll('#vstyle button').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('#vstyle button').forEach(b => b.classList.remove('on'));
-    btn.classList.add('on');
-    vstyle = btn.dataset.s;
+/* ============================ 文章 ============================ */
+
+let artPlatform = 'wechat', artWords = 'medium', artBusy = false;
+
+document.querySelectorAll('#artPlatform button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('#artPlatform button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); artPlatform = b.dataset.p;
   };
 });
-
-document.querySelectorAll('#words button').forEach(btn => {
-  btn.onclick = () => {
-    document.querySelectorAll('#words button').forEach(b => b.classList.remove('on'));
-    btn.classList.add('on');
-    words = btn.dataset.w;
+document.querySelectorAll('#artWords button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('#artWords button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); artWords = b.dataset.w;
   };
 });
-
-document.querySelectorAll('.tab').forEach(tab => {
+document.querySelectorAll('#modeArticle .tab').forEach(tab => {
   tab.onclick = () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+    document.querySelectorAll('#modeArticle .tab').forEach(t => t.classList.remove('on'));
     tab.classList.add('on');
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
+    document.querySelectorAll('#modeArticle .view').forEach(v => v.classList.remove('on'));
     $('view' + tab.dataset.v.charAt(0).toUpperCase() + tab.dataset.v.slice(1)).classList.add('on');
   };
 });
 
-goEl.onclick = async () => {
-  const text = inputEl.value.trim();
-  if (text.length < 2) { inputEl.focus(); return; }
+const STAGE_ORDER = ['plan', 'compose', 'reflect', 'render'];
 
-  goEl.disabled = true;
-  goEl.textContent = '生成中…';
-  resetUI();
-  document.querySelector('.tab[data-v="doc"]').click();
+function setStages(name) {
+  const i = STAGE_ORDER.indexOf(name);
+  document.querySelectorAll('#artStages .stage').forEach((el, k) => {
+    el.classList.toggle('done', k < i);
+    el.classList.toggle('on', k === i);
+  });
+}
+
+async function genArticle() {
+  const text = $('artInput').value.trim();
+  if (text.length < 2 || artBusy) return;
+  artBusy = true;
+  $('artGo').disabled = true;
+  $('artGo').textContent = '生成中…';
+
+  $('artEmpty').hidden = true;
+  $('artThink').hidden = false;
+  $('artBrief').classList.remove('on');
+  $('artBrief').innerHTML = '';
+  $('artMd').innerHTML = '<p class="ph">正在拆解输入…</p>';
+  $('reflectList').innerHTML = '<p class="ph">每次执行后，反思会给出分维度评分、问题清单和修复动作。</p>';
+  $('rCount').textContent = '0';
+  document.querySelectorAll('#artStages .stage').forEach(el => { el.className = 'stage'; });
+
+  let raw = '', pending = false, rn = 0;
+  const flush = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => {
+      pending = false;
+      $('artMd').innerHTML = renderMd(raw, true);
+    });
+  };
 
   try {
-    const resp = await fetch('/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, platform, style: vstyle, words })
-    });
-    if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
-    const { task_id } = await resp.json();
-
-    es = new EventSource(`/api/tasks/${task_id}/events`);
-    es.onmessage = (m) => {
-      try { handleEvent(JSON.parse(m.data)); } catch (e) { console.error(e); }
-    };
-    es.onerror = () => {
-      if (es && es.readyState === EventSource.CLOSED) {
-        setThink('连接中断', false);
-        goEl.disabled = false;
-        goEl.textContent = '重试';
+    const done = await runTask(
+      { input: text, platform: artPlatform, style: 'auto', words: artWords },
+      (ev) => {
+        if (ev.type === 'stage') { setStages(ev.stage); $('artThinkText').textContent = ev.label || ''; }
+        if (ev.type === 'brief') renderBrief(ev.brief);
+        if (ev.type === 'round_start') {
+          raw = '';
+          if (ev.round > 1) $('artMd').innerHTML = '<p class="ph">按上一轮问题重写…</p>';
+        }
+        if (ev.type === 'delta' && ev.kind === 'content') { raw += ev.text; flush(); }
+        if (ev.type === 'reflection') { addReflection(ev.reflection); $('rCount').textContent = String(++rn); }
       }
-    };
+    );
+    $('artMd').innerHTML = renderMd(raw, false);
+    document.querySelectorAll('#artStages .stage').forEach(el => { el.classList.remove('on'); el.classList.add('done'); });
+    $('artThinkText').textContent = `完成 · ${done.result.word_count} 字 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s`;
+    $('cost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
+    $('artGo').textContent = '再生成一篇';
   } catch (e) {
-    setThink('失败：' + e.message, false);
-    goEl.disabled = false;
-    goEl.textContent = '重试';
+    $('artMd').innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
+    $('artThinkText').textContent = '失败：' + e.message;
+    $('artGo').textContent = '重试';
+  } finally {
+    artBusy = false;
+    $('artGo').disabled = false;
   }
-};
+}
 
-inputEl.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') goEl.click();
+function renderBrief(b) {
+  const tags = [b.platform, b.audience, `${b.word_limit} 字`, b.tone]
+    .filter(Boolean).map(t => `<span class="tag">${esc(String(t))}</span>`).join('');
+  const ol = (b.outline || []).map(s => `<li>${esc(s.heading)}</li>`).join('');
+  const facts = (b.facts || []).map(f =>
+    `<div class="fact ${f.source ? '' : 'warn'}">${f.source ? '✓' : '⚠'} ${esc(f.claim)}${f.source ? '（' + esc(f.source) + '）' : '（无出处）'}</div>`).join('');
+  $('artBrief').innerHTML = `<div class="bt">${esc(b.topic)}</div>
+    <div class="bd">${esc(b.angle || '')}</div>
+    <div class="tags">${tags}</div><ol>${ol}</ol>${facts}`;
+  $('artBrief').classList.add('on');
+}
+
+function addReflection(r) {
+  const scores = Object.entries(r.scores || {}).map(([k, v]) => `
+    <div class="srow"><span>${esc(k)}</span>
+      <span class="sbar"><i style="--w:${Math.max(0, Math.min(100, v))}%"></i></span>
+      <span class="sval">${v}</span></div>`).join('');
+  const issues = (r.issues || []).map(i => `<div>${esc(i)}</div>`).join('');
+  const el = document.createElement('div');
+  el.className = 'rcard';
+  el.innerHTML = `<div class="rh"><b>第 ${r.round} 轮</b>
+      <span class="act ${r.repair_action}">${r.repair_action.toUpperCase()}</span></div>
+    ${scores}${issues ? `<div class="iss">${issues}</div>` : ''}
+    <div class="rtotal">综合 ${r.total} / 100</div>`;
+  const list = $('reflectList');
+  if (list.querySelector('.ph')) list.innerHTML = '';
+  list.prepend(el);
+}
+
+$('artGo').onclick = genArticle;
+$('artInput').addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') genArticle();
 });
 
-/* ---------------- 启动 ---------------- */
+/* ============================ 视频 ============================ */
+
+let vidStyle = 'auto', vidLen = '60', vidBusy = false;
+
+document.querySelectorAll('#vidStyle button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('#vidStyle button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); vidStyle = b.dataset.s;
+  };
+});
+document.querySelectorAll('#vidLen button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('#vidLen button').forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); vidLen = b.dataset.l;
+  };
+});
+document.querySelectorAll('#modeVideo .tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('#modeVideo .tab').forEach(t => t.classList.remove('on'));
+    tab.classList.add('on');
+    document.querySelectorAll('#modeVideo .view').forEach(v => v.classList.remove('on'));
+    $('view' + tab.dataset.v.charAt(0).toUpperCase() + tab.dataset.v.slice(1)).classList.add('on');
+  };
+});
+
+async function genVideo() {
+  const text = $('vidInput').value.trim();
+  if (text.length < 2 || vidBusy) return;
+  vidBusy = true;
+  $('vidGo').disabled = true;
+  $('vidGo').textContent = '生成中…';
+  $('sbList').innerHTML = '<span class="ph">正在生成分镜…</span>';
+  $('playerBox').innerHTML = '<p class="ph">正在渲染…</p>';
+
+  try {
+    const done = await runTask(
+      {
+        input: text, platform: 'video', style: vidStyle,
+        words: vidLen === '30' ? 'short' : vidLen === '90' ? 'long' : 'medium',
+      },
+      (ev) => {
+        if (ev.type === 'brief') renderStoryboard(ev.brief, vidLen);
+        if (ev.type === 'stage') $('vidHint').textContent = ev.label;
+      }
+    );
+
+    $('playerBox').innerHTML = `
+      <div class="prow">
+        <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
+        <span class="meta">${done.result.style || vidStyle} · ${done.result.rounds.length} 轮</span>
+      </div>
+      <iframe src="${done.url}" title="视频成品"></iframe>`;
+    $('vidHint').textContent = `完成 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s`;
+    $('cost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
+    $('vidGo').textContent = '重新生成';
+  } catch (e) {
+    $('playerBox').innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
+    $('vidHint').textContent = '失败：' + e.message;
+    $('vidGo').textContent = '重试';
+  } finally {
+    vidBusy = false;
+    $('vidGo').disabled = false;
+  }
+}
+
+/** 大纲 → 分镜。每节一个镜头，秒数按总时长均分。 */
+function renderStoryboard(brief, totalSec) {
+  const sections = brief.outline || [];
+  if (!sections.length) return;
+  const per = Math.max(3, Math.round(+totalSec / sections.length));
+  const rows = sections.map((s, i) => `
+    <div class="sb-item"><b>S${String(i + 1).padStart(2, '0')}</b>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.heading)}</span>
+      <span style="color:var(--dim);font-family:var(--mono);font-size:9.5px">${per}s</span></div>`).join('');
+  $('sbList').innerHTML = rows;
+  $('shotList').innerHTML = rows +
+    `<p class="ph" style="margin-top:14px">镜头类型后续会区分：标题卡 / 截图卡 / 数据卡 / 纯文字；转场按风格配置切换。</p>`;
+}
+
+$('vidGo').onclick = genVideo;
+$('vidInput').addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') genVideo();
+});
+
+/* ============================ 启动 ============================ */
 
 (async function boot() {
-  // ?demo=1 自动填充并开跑，用于截图自检和演示
-  if (new URLSearchParams(location.search).get('demo') === '1') {
-    inputEl.value = '从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构';
-    setTimeout(() => goEl.click(), 500);
-  }
   try {
     const h = await (await fetch('/api/health')).json();
-    const dot = $('modeDot');
-    dot.classList.add(h.mock ? 'mock' : 'live');
+    $('modeDot').classList.add(h.mock ? 'mock' : 'live');
     $('modeText').textContent = h.mock ? 'MOCK 模式' : h.model;
-    if (h.mock) {
-      hintEl.textContent = 'Mock 模式：数据结构与真实调用完全一致，切真实模型只需设 LLM_MOCK=0。';
-    }
   } catch { $('modeText').textContent = '离线'; }
 
-  // 粒子背景
-  const c = document.getElementById('dots');
-  const ctx = c.getContext('2d');
-  let w, h, pts;
-  const resize = () => {
-    w = c.width = innerWidth * devicePixelRatio;
-    h = c.height = innerHeight * devicePixelRatio;
-    c.style.width = innerWidth + 'px';
-    c.style.height = innerHeight + 'px';
-    pts = Array.from({ length: innerWidth < 700 ? 28 : 54 }, () => ({
-      x: Math.random() * w, y: Math.random() * h,
-      vx: (Math.random() - .5) * .13 * devicePixelRatio,
-      vy: (Math.random() - .5) * .13 * devicePixelRatio
-    }));
-  };
-  resize(); addEventListener('resize', resize);
-  (function frame() {
-    ctx.clearRect(0, 0, w, h);
-    const R = 128 * devicePixelRatio;
-    for (const p of pts) {
-      p.x += p.vx; p.y += p.vy;
-      if (p.x < 0 || p.x > w) p.vx *= -1;
-      if (p.y < 0 || p.y > h) p.vy *= -1;
-    }
-    for (let i = 0; i < pts.length; i++) {
-      for (let j = i + 1; j < pts.length; j++) {
-        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
-        const d = Math.hypot(dx, dy);
-        if (d < R) {
-          ctx.strokeStyle = 'rgba(120,90,230,' + (0.14 * (1 - d / R)) + ')';
-          ctx.lineWidth = devicePixelRatio;
-          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke();
-        }
-      }
-      ctx.fillStyle = 'rgba(160,140,255,.45)';
-      ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 1.4 * devicePixelRatio, 0, 7); ctx.fill();
-    }
-    requestAnimationFrame(frame);
-  })();
+  const QS = new URLSearchParams(location.search);
+
+  // ?demo=1 自动跑一篇文章，用于截图自检
+  if (QS.get('demo') === '1') {
+    switchMode('article');
+    $('artInput').value = '从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构';
+    setTimeout(genArticle, 500);
+  }
+  if (QS.has('mode')) switchMode(QS.get('mode'));
 })();
