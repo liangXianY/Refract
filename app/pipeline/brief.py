@@ -46,40 +46,57 @@ def _user_prompt(user_input: str, platform: str, word_limit: int, tone: str) -> 
     )
 
 
-# 平台规格由代码决定，不交给模型。
+# 篇幅档位：由代码决定，不交给模型。
 # 实测过：让模型自己填 word_limit，它会直接给上限 6000，
 # 结果单轮写了 11670 字，耗时从 30 秒涨到 115 秒，反思还把稿子打成 replan。
 # 篇幅是产品决策，不是创作决策。
-PLATFORM_SPEC: dict[str, dict[str, object]] = {
-    "wechat": {"word_limit": 1200, "tone": "专业、克制、有观点，不堆术语"},
-    "xiaohongshu": {"word_limit": 550, "tone": "轻松口语、有个人感、不端着"},
-    "video": {"word_limit": 800, "tone": "口语化、节奏快、能直接念"},
+WORD_TIERS: dict[str, dict[str, int]] = {
+    "wechat": {"short": 600, "medium": 1200, "long": 2500},
+    "xiaohongshu": {"short": 300, "medium": 550, "long": 900},
+    "video": {"short": 400, "medium": 800, "long": 1400},
+}
+
+PLATFORM_TONE: dict[str, str] = {
+    "wechat": "专业、克制、有观点，不堆术语",
+    "xiaohongshu": "轻松口语、有个人感、不端着",
+    "video": "口语化、节奏快、能直接念",
 }
 
 
-async def plan(llm: LLMClient, user_input: str, platform: str = "wechat") -> ContentBrief:
-    spec = PLATFORM_SPEC.get(platform, PLATFORM_SPEC["wechat"])
+def resolve_word_limit(platform: str, words: str) -> int:
+    tiers = WORD_TIERS.get(platform, WORD_TIERS["wechat"])
+    return tiers.get(words, tiers["medium"])
+
+
+async def plan(
+    llm: LLMClient,
+    user_input: str,
+    platform: str = "wechat",
+    words: str = "medium",
+) -> ContentBrief:
+    word_limit = resolve_word_limit(platform, words)
+    tone = PLATFORM_TONE.get(platform, PLATFORM_TONE["wechat"])
 
     if llm.cfg.mock:
-        return mock.mock_brief(user_input, platform)
+        return mock.mock_brief(user_input, platform, word_limit)
 
     def _validate(raw: dict) -> None:
         ContentBrief.model_validate({**raw, "platform": platform})
 
     raw = await llm.structured(
         system=SYSTEM,
-        user=_user_prompt(user_input, platform, int(spec["word_limit"]), str(spec["tone"])),  # type: ignore[arg-type]
+        user=_user_prompt(user_input, platform, word_limit, tone),
         max_tokens=4000,
         validate=_validate,
     )
     raw.setdefault("platform", platform)
     brief = ContentBrief.model_validate(raw)
 
-    # 模型在这三个字段上没有决定权：写什么平台、多少字、什么调性，是产品侧定的
+    # 模型在这几个字段上没有决定权：平台、篇幅、调性是产品侧定的
     brief.platform = platform  # type: ignore[assignment]
-    brief.word_limit = int(spec["word_limit"])  # type: ignore[arg-type]
+    brief.word_limit = word_limit
     if not brief.tone:
-        brief.tone = str(spec["tone"])
+        brief.tone = tone
     return brief
 
 

@@ -34,6 +34,10 @@ llm = LLMClient(settings)
 class GenerateIn(BaseModel):
     input: str = Field(min_length=2, max_length=4000)
     platform: str = Field(default="wechat", pattern="^(wechat|xiaohongshu|video)$")
+    # 视频风格：auto 表示让模型按内容自己挑
+    style: str = Field(default="auto", pattern="^(auto|minimal|apple|editorial|tech|sketch)$")
+    # 篇幅档位
+    words: str = Field(default="medium", pattern="^(short|medium|long)$")
 
 
 class TaskState:
@@ -72,11 +76,11 @@ async def generate(payload: GenerateIn) -> dict[str, str]:
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    asyncio.create_task(_run(task, payload.input, payload.platform))
+    asyncio.create_task(_run(task, payload.input, payload.platform, payload.words, payload.style))
     return {"task_id": task_id}
 
 
-async def _run(task: TaskState, user_input: str, platform: str) -> None:
+async def _run(task: TaskState, user_input: str, platform: str, words: str, style: str) -> None:
     task.status = "running"
     try:
         result = await run_pipeline(
@@ -84,6 +88,8 @@ async def _run(task: TaskState, user_input: str, platform: str) -> None:
             user_input=user_input,
             platform=platform,
             llm=llm,
+            words=words,
+            style=style,
             emit=task.push,
             max_rounds=settings.max_rounds,
         )

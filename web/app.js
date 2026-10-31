@@ -14,6 +14,8 @@ const previewBox = $('previewBox');
 const hintEl = $('hint');
 
 let platform = 'wechat';
+let vstyle = 'auto';
+let words = 'medium';
 let es = null;
 let raw = '';
 let reasoning = '';
@@ -247,10 +249,19 @@ document.querySelectorAll('#platform button').forEach(btn => {
   };
 });
 
-document.querySelectorAll('.chip').forEach(chip => {
-  chip.onclick = () => {
-    inputEl.value = chip.dataset.t;
-    inputEl.focus();
+document.querySelectorAll('#vstyle button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('#vstyle button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    vstyle = btn.dataset.s;
+  };
+});
+
+document.querySelectorAll('#words button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('#words button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    words = btn.dataset.w;
   };
 });
 
@@ -276,7 +287,7 @@ goEl.onclick = async () => {
     const resp = await fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, platform })
+      body: JSON.stringify({ input: text, platform, style: vstyle, words })
     });
     if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
     const { task_id } = await resp.json();
@@ -306,6 +317,11 @@ inputEl.addEventListener('keydown', (e) => {
 /* ---------------- 启动 ---------------- */
 
 (async function boot() {
+  // ?demo=1 自动填充并开跑，用于截图自检和演示
+  if (new URLSearchParams(location.search).get('demo') === '1') {
+    inputEl.value = '从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构';
+    setTimeout(() => goEl.click(), 500);
+  }
   try {
     const h = await (await fetch('/api/health')).json();
     const dot = $('modeDot');

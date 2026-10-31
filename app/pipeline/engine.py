@@ -28,13 +28,15 @@ async def run_pipeline(
     user_input: str,
     platform: str,
     llm: LLMClient,
+    words: str = "medium",
+    style: str = "auto",
     emit: Emitter,
     max_rounds: int = 2,
 ) -> dict[str, Any]:
     started = time.time()
     await emit({"type": "stage", "stage": "plan", "label": "拆解输入，生成内容方案"})
 
-    brief: ContentBrief = await plan(llm, user_input, platform)
+    brief: ContentBrief = await plan(llm, user_input, platform, words)
     await emit({"type": "brief", "brief": brief.model_dump()})
 
     body = ""
@@ -89,6 +91,7 @@ async def run_pipeline(
                 llm,
                 user_input + "\n\n上一版方案的问题（必须避免）：\n" + "\n".join(refl.issues),
                 platform,
+                words,
             )
             await emit({"type": "brief", "brief": brief.model_dump()})
         last_total = refl.total
@@ -113,5 +116,6 @@ async def run_pipeline(
         "elapsed_ms": elapsed,
         "model": llm.cfg.model,
         "mocked": llm.cfg.mock,
+        "style": style,
     }
     return result

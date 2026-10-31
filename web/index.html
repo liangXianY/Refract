@@ -3,61 +3,71 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>内容生产 Agent · Content Pipeline</title>
+<title>Refract · 内容生产 Agent</title>
 <link rel="stylesheet" href="/web/styles.css"/>
 </head>
 <body>
-<div class="bg"></div>
-<div class="grid"></div>
-<canvas id="dots"></canvas>
 
-<header>
+<nav>
   <div class="brand">
-    <span class="logo">◈</span>
-    <div>
-      <h1>内容生产 Agent</h1>
-      <p>一句话 / 一篇稿 / 一个链接 → 公众号文案 + 动画成品</p>
-    </div>
+    <div class="logo">R</div>
+    <h1>Refract</h1>
+    <span>CONTENT AGENT</span>
   </div>
-  <div class="stat">
-    <span class="dot" id="modeDot"></span>
-    <span id="modeText">检测中</span>
+  <div class="navlinks">
+    <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener">GitHub</a>
+    <a href="/api/health" target="_blank" rel="noopener">健康检查</a>
+    <div class="stat"><span class="dot" id="modeDot"></span><span id="modeText">检测中</span></div>
   </div>
-</header>
+</nav>
+
+<section class="hero">
+  <div class="wm">REFRACT</div>
+  <div class="inner">
+    <div class="eyebrow">Content Agent</div>
+    <h2>把一句话，做成<u>能发</u>的内容</h2>
+    <p>抓取、生成、渲染三条链路，每一步都留痕可查。不靠一次调用的运气，靠分层校验和可回退的修复。</p>
+  </div>
+</section>
 
 <main>
   <!-- 左：输入 -->
   <section class="panel input">
     <label class="lb">输入</label>
-    <textarea id="input" placeholder="想写什么？比如：&#10;给后端工程师讲清楚向量数据库到底解决了什么问题"></textarea>
-
-    <div class="chips">
-      <button class="chip" data-t="给后端工程师讲清楚向量数据库到底解决了什么问题">向量数据库</button>
-      <button class="chip" data-t="从工程角度复盘我们为什么把动画渲染从服务端改到前端">渲染改前端</button>
-      <button class="chip" data-t="反思机制在 Agent 循环里为什么必须分三档">反思三档</button>
-    </div>
+    <textarea id="input" placeholder="想写什么？比如：&#10;从 GitHub 热榜挑一个项目，写篇公众号介绍它"></textarea>
 
     <label class="lb mt">目标平台</label>
     <div class="seg" id="platform">
-      <button class="on" data-p="wechat">公众号长文</button>
+      <button class="on" data-p="wechat">公众号</button>
       <button data-p="xiaohongshu">小红书</button>
       <button data-p="video">口播稿</button>
     </div>
 
-    <button id="go" class="primary">开始生成</button>
-    <p class="hint" id="hint">Mock 模式下不消耗 token；切真实模型只改一个环境变量。</p>
-
-    <div class="stages" id="stages">
-      <div class="stage" data-s="plan"><i></i><span>Plan</span><em>拆解输入</em></div>
-      <div class="stage" data-s="compose"><i></i><span>Execute</span><em>按大纲写作</em></div>
-      <div class="stage" data-s="reflect"><i></i><span>Reflect</span><em>校验与评分</em></div>
-      <div class="stage" data-s="render"><i></i><span>Render</span><em>生成动画</em></div>
+    <label class="lb mt">视频风格</label>
+    <div class="styles" id="vstyle">
+      <button class="on" data-s="auto"><i class="sw-auto"></i>自动匹配</button>
+      <button data-s="minimal"><i class="sw-min"></i>简约</button>
+      <button data-s="apple"><i class="sw-apple"></i>苹果</button>
+      <button data-s="editorial"><i class="sw-edit"></i>杂志</button>
+      <button data-s="tech"><i class="sw-tech"></i>科技</button>
+      <button data-s="sketch"><i class="sw-sketch"></i>手绘</button>
     </div>
 
-    <div class="note">
-      <b>为什么是这三步</b>
-      <p>先拆成结构化方案再写，写完全量校验——不合格时按问题严重程度分三档修复：
-      偶发失败原样重跑，局部问题改参数重跑，方案错了才回退重规划。</p>
+    <label class="lb mt">篇幅</label>
+    <div class="seg" id="words">
+      <button data-w="short">短</button>
+      <button class="on" data-w="medium">中</button>
+      <button data-w="long">长</button>
+    </div>
+
+    <button id="go" class="primary">开始生成</button>
+    <p class="hint" id="hint">Mock 模式不消耗 token，切真实模型改一个环境变量即可。</p>
+
+    <div class="stages" id="stages">
+      <div class="stage" data-s="plan"><i></i><span>PLAN</span><em>拆解输入</em></div>
+      <div class="stage" data-s="compose"><i></i><span>EXECUTE</span><em>按大纲写作</em></div>
+      <div class="stage" data-s="reflect"><i></i><span>REFLECT</span><em>校验与评分</em></div>
+      <div class="stage" data-s="render"><i></i><span>RENDER</span><em>生成动画</em></div>
     </div>
   </section>
 
@@ -71,10 +81,10 @@
 
     <div class="view on" id="viewDoc">
       <div class="empty" id="empty">
-        <div class="ico">◈</div>
+        <div class="ico">R</div>
         <h3>还没有生成内容</h3>
-        <p>在左侧输入一句话，或点一个示例标签开始。<br/>
-          Mock 模式全流程约 3 秒；切到真实模型约 40–90 秒，过程会实时流式显示。</p>
+        <p>在左侧输入一句话开始。<br/>
+          Mock 模式全流程约 3 秒；真实模型约 40–90 秒，过程会实时流式显示。</p>
       </div>
       <div class="think" id="think" hidden><span class="tdot"></span><span id="thinkText">等待开始</span></div>
       <div class="brief" id="brief"></div>
@@ -92,7 +102,7 @@
 </main>
 
 <footer>
-  <span>FastAPI · asyncio · SSE 流式 · SQLite 无关的进程内任务</span>
+  <span>FastAPI · asyncio · SSE 流式 · Plan-Execute-Reflect</span>
   <span id="cost">—</span>
 </footer>
 

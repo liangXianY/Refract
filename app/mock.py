@@ -21,7 +21,7 @@ _PLATFORM_HINT = {
 _WORD_LIMIT = {"wechat": 1200, "xiaohongshu": 550, "video": 800}
 
 
-def mock_brief(user_input: str, platform: str = "wechat") -> ContentBrief:
+def mock_brief(user_input: str, platform: str = "wechat", word_limit: int | None = None) -> ContentBrief:
     topic = (user_input or "内容生产 Agent").strip().replace("\n", " ")[:40]
     kind = _PLATFORM_HINT.get(platform, "公众号长文")
     return ContentBrief(
@@ -30,7 +30,7 @@ def mock_brief(user_input: str, platform: str = "wechat") -> ContentBrief:
         audience="对 AI 应用落地感兴趣的技术与业务同学",
         platform=platform,  # type: ignore[arg-type]
         tone="专业、克制、有观点，不堆术语",
-        word_limit=_WORD_LIMIT.get(platform, 1200),
+        word_limit=word_limit or _WORD_LIMIT.get(platform, 1200),
         hook=f"先说结论：{topic} 的价值不在模型本身，而在它替掉的那段重复劳动。",
         outline=[
             Section(
