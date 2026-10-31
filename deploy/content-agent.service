@@ -17,10 +17,15 @@ Environment=PYTHONUNBUFFERED=1
 # 写死会把 .env 里的开关吃掉，改配置文件不生效（踩过）。
 
 ExecStart=/home/ubuntu/app/content-agent/.venv/bin/python -m uvicorn app.main:app \
-    --host 0.0.0.0 --port 8080 --workers 1 --log-level warning
+    --host 0.0.0.0 --port 8080 --workers 1 --log-level warning \
+    --timeout-graceful-shutdown 5
 
 Restart=always
 RestartSec=3
+
+# SSE 长连接会让 uvicorn 优雅关闭一直等，不加这条每次重启都要等满 90 秒
+# 再被 SIGKILL——部署又慢又粗暴（实测踩过）
+TimeoutStopSec=10
 
 # 内存红线：机器只有 1.9G，应用被 OOM 杀掉好过拖死整机（ssh 也会断）
 MemoryMax=700M
