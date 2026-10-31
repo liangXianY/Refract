@@ -44,6 +44,7 @@ SYSTEM = """你是 Motion Graphics 工程师，用 Canvas 2D 写一条中文演�
 - 用一个 <canvas> + 一个 <script>，不要引库
 - **整份代码控制在 450 行以内，必须写完，最后一个字符是 </html>**。
   写不完宁可砍效果：一个能播的 400 行比一个播不了的 800 行有用得多
+- 把总时长写到 window.__DUR = <给定时长>（数值即可），音效引擎按它排节拍
 
 内容硬要求（不满足就算废片）：
 - 屏幕上必须有真实中文文字。开场 3 秒内必须出现主标题，最后 2 秒仍要有字
@@ -77,11 +78,26 @@ REPAIR_HINT = """上一版没通过自动检查，问题如下：
 """
 
 
+# 硬伤 = 这片子根本没法看（截断/空白/不能播），必须降级模板；
+# 软伤 = 内容质量不达标（字少/覆盖低），能用，标注出来就行。
+# 为什么分：Opus 一次生成 5-10 分钟，为「字少了点」重烧一遍 16k token 不划算。
+_HARD_MARKS = ("文件不完整", "太短", "没有 <canvas>", "没有动画循环", "外部资源", "空正文")
+
+
+def hard_failures(failures: list[str]) -> list[str]:
+    return [f for f in failures if any(m in f for m in _HARD_MARKS)]
+
+
 @dataclass
 class GateResult:
     ok: bool
     failures: list[str] = field(default_factory=list)
     stats: dict = field(default_factory=dict)
+
+    @property
+    def hard(self) -> list[str]:
+        """硬伤子集：空列表 = 片子能播，质量问题照用。"""
+        return hard_failures(self.failures)
 
 
 @dataclass
@@ -268,7 +284,7 @@ async def generate(
     brief: ContentBrief,
     plan: VideoPlan,
     *,
-    max_attempts: int = 2,
+    max_attempts: int = 1,  # 实测重修要再烧 5-10 分钟的 Opus 额度；除硬伤外直接用第一版
 ) -> VideoResult:
     """让视频模型写整份 HTML；不过闸门就带着失败原因重修一次。"""
     user = _brief_block(brief, plan)
@@ -329,6 +345,51 @@ async def generate(
     )
 
 
+# 音效引擎：WebAudio 程序化合成，不用任何音频素材（版权干净、体积为零）。
+# 浏览器禁止自动播放声音，所以默认静音，观众点一下才响。
+# 节拍按 window.__DUR（Opus 被要求写入）八等分：每拍一个轻 tick，
+# 每 6 拍一个 whoosh，最后一拍上扬和弦。__DUR 缺失时按 24s 兜底。
+_AUDIO_JS = """
+(function(){
+  var DUR = (window.__DUR && window.__DUR > 5) ? window.__DUR : 24;
+  var on = false, ac = null, timer = null, n = 0;
+  function env(g, t, a, d, v){ g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(v, t + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + a + d); }
+  function tick(t){ var o = ac.createOscillator(), g = ac.createGain();
+    o.type = 'triangle'; o.frequency.value = 660 + (n % 3) * 180;
+    env(g, t, 0.005, 0.1, 0.05); o.connect(g).connect(ac.destination);
+    o.start(t); o.stop(t + 0.14); }
+  function whoosh(t){ var len = Math.floor(ac.sampleRate * 0.45),
+    b = ac.createBuffer(1, len, ac.sampleRate), d = b.getChannelData(0);
+    for (var i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
+    var s = ac.createBufferSource(); s.buffer = b;
+    var f = ac.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.2;
+    f.frequency.setValueAtTime(280, t); f.frequency.exponentialRampToValueAtTime(2600, t + 0.38);
+    var g = ac.createGain(); env(g, t, 0.02, 0.42, 0.09);
+    s.connect(f).connect(g).connect(ac.destination); s.start(t); }
+  function chord(t){ [261.6, 329.6, 392.0].forEach(function(fq, i){
+    var o = ac.createOscillator(), g = ac.createGain(); o.type = 'sine';
+    o.frequency.value = fq; env(g, t + i * 0.05, 0.03, 1.3, 0.045);
+    o.connect(g).connect(ac.destination); o.start(t + i * 0.05); o.stop(t + 1.5); }); }
+  function beat(){ var t = ac.currentTime + 0.02; n++;
+    if (n === 1 || n % 6 === 4) whoosh(t);
+    else if (n % 6 === 0) chord(t); else tick(t); }
+  var b = document.createElement('button');
+  b.textContent = '🔇 音效';
+  b.style.cssText = 'position:fixed;right:14px;bottom:44px;z-index:9;font:500 12px ui-monospace,Menlo,monospace;color:#7b8b99;background:rgba(8,12,16,.72);border:1px solid #1e2a33;border-radius:6px;padding:5px 10px;cursor:pointer;backdrop-filter:blur(6px)';
+  b.onclick = function(){
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    on = !on;
+    if (on) { b.textContent = '🔊 音效中'; ac.resume(); beat();
+      timer = setInterval(beat, DUR * 1000 / 8); }
+    else { b.textContent = '🔇 音效'; ac.suspend(); clearInterval(timer); }
+  };
+  document.body.appendChild(b);
+})();
+"""
+
+
 def wrap_meta(html: str, plan: VideoPlan, res: VideoResult) -> str:
     """在产物里注入一段可关闭的角标：哪个模型、过了几道闸。
 
@@ -341,14 +402,16 @@ def wrap_meta(html: str, plan: VideoPlan, res: VideoResult) -> str:
         "color:#7b8b99;background:rgba(8,12,16,.72);border:1px solid #1e2a33;"
         "border-radius:6px;padding:6px 10px;letter-spacing:.02em;pointer-events:none;"
         'backdrop-filter:blur(6px)">'
-        f"{res.provider_label} · {res.model} · 闸门 {'通过' if res.gate.ok else '未过'} "
-        f"· 第 {res.attempts} 版</div>"
+        f"{res.provider_label} · {res.model} · "
+        + ("闸门通过" if res.gate.ok else "软伤标注：" + "；".join(res.gate.failures)[:60] + " · 第 1 版直接使用")
+        + "</div>"
     )
-    if not res.gate.ok:
-        return html  # 残缺文件不注入，保持原样方便排查到底断在哪
+    if res.gate.hard:
+        return html  # 硬伤残缺文件不注入，保持原样方便排查到底断在哪
+    audio = "<script>" + _AUDIO_JS + "</script>"
     if "</body>" in html:
-        return html.replace("</body>", badge + "\n</body>", 1)
-    return html + badge
+        return html.replace("</body>", badge + audio + "\n</body>", 1)
+    return html + badge + audio
 
 
 def save(html: str, task_id: str, data_dir: Path, meta: dict) -> Path:

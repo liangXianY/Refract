@@ -705,15 +705,17 @@ async def _run_video(
                     (settings.data_dir / "videos" / f"{task_id}-a{i}.html").write_text(h, encoding="utf-8")
                 except OSError:
                     pass
-            degraded = not res.gate.ok
+            # 只拦硬伤（截断/空白/不能播）。软伤（字少/覆盖低）照用+角标标注：
+            # Opus 一次 5-10 分钟，为「字少了点」重烧一遍 16k token 不划算
+            hard = res.gate.hard
+            degraded = bool(hard)
             if degraded:
-                # 闸门没过：宁可给模板片，也不给空白页
-                await task.push({"type": "note", "text": "模型产物未过闸门，降级到模板渲染"})
+                await task.push({"type": "note", "text": "产物有硬伤（无法播放），降级到模板渲染"})
                 save_video(
                     brief, "", task_id, settings.data_dir, plan_obj.style or "hud",
                     f"{plan_obj.name} · 降级模板",
                 )
-                record["degrade_reason"] = "闸门未通过：" + "；".join(res.gate.failures)
+                record["degrade_reason"] = "硬伤：" + "；".join(hard)
                 record["rejected_html_chars"] = len(res.html)
             else:
                 opus_video.save(
