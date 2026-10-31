@@ -93,6 +93,8 @@ class VideoResult:
     gate: GateResult
     attempts: int
     degraded: bool = False
+    # 每一版都留痕：复盘时最想知道的是「第一次为什么没过」，只留最后一次等于没留
+    history: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- 闸门
@@ -272,6 +274,7 @@ async def generate(
     gate = GateResult(ok=False, failures=["未生成"])
     p = llm.provider("video")
     attempts = 0
+    history: list[dict] = []
 
     for attempt in range(max_attempts):
         attempts = attempt + 1
@@ -285,7 +288,26 @@ async def generate(
             temperature=0.65 if attempt == 0 else 0.4,  # 重修时收敛，别又跑偏
             route="video",
         )
+        if not html.strip():
+            # 空产出重试没有意义：推理模型把 token 额度全花在思考上时，正文就是空的，
+            # 这是端点/模型特性，不是「这次运气差」。直接降级，别再烧第二遍。
+            gate = GateResult(
+                ok=False,
+                failures=["模型返回了空正文（推理把额度耗尽，或端点不支持长输出）。换非推理模型再试"],
+                stats={"chars": 0},
+            )
+            history.append({"attempt": attempts, "chars": 0, "ok": False, "failures": gate.failures, "stats": gate.stats})
+            break
         gate = check(html, brief, plan.duration)
+        history.append(
+            {
+                "attempt": attempts,
+                "chars": len(html),
+                "ok": gate.ok,
+                "failures": gate.failures,
+                "stats": gate.stats,
+            }
+        )
         if gate.ok:
             break
 
@@ -297,6 +319,7 @@ async def generate(
         gate=gate,
         attempts=attempts,
         degraded=False,
+        history=history,
     )
 
 

@@ -266,6 +266,17 @@ async function genArticle() {
     $('artThinkText').textContent = `完成 · ${done.result.word_count} 字 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s`;
     $('cost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
     $('artGo').textContent = '再生成一篇';
+
+    // md 下载：产物页是给眼睛看的，发平台要的是文件
+    const old = document.getElementById('artDl');
+    if (old) old.remove();
+    const dl = document.createElement('a');
+    dl.id = 'artDl';
+    dl.className = 'ghost';
+    dl.textContent = '下载 .md';
+    dl.href = `/api/articles/${done.task_id}/md`;
+    dl.download = '';
+    document.getElementById('artDlSlot').appendChild(dl);
   } catch (e) {
     $('artMd').innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
     $('artThinkText').textContent = '失败：' + e.message;
@@ -309,6 +320,40 @@ $('artGo').onclick = genArticle;
 $('artInput').addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') genArticle();
 });
+
+/* ---- GitHub 热点选题 ----
+   不自动拉取：一进页面就打 GitHub API 会白耗 60 次/小时的限额。 */
+
+$('ghLoad').onclick = async () => {
+  $('ghLoad').disabled = true;
+  $('ghLoad').textContent = '拉取中…';
+  try {
+    const d = await (await fetch('/api/trending/github?days=7&limit=8')).json();
+    if (d.detail) throw new Error(d.detail);
+    $('ghList').innerHTML = (d.items || []).map(i => `
+      <button class="titem" data-obj="${esc(i.full_name)}">
+        <b>${esc(i.full_name)}</b>
+        <span>★ ${i.stars}${i.language ? ' · ' + esc(i.language) : ''}</span>
+        <em>${esc((i.description || '').slice(0, 46))}</em>
+      </button>`).join('');
+    document.querySelectorAll('.titem').forEach(b => {
+      b.onclick = () => {
+        document.querySelectorAll('.titem').forEach(x => x.classList.remove('on'));
+        b.classList.add('on');
+        const name = b.dataset.obj;
+        $('artInput').value = `用 GitHub 上的 ${name} 这个项目写一篇介绍（链接：https://github.com/${name}）`;
+        autosize($('artInput'));
+        $('artHint').textContent = '已选中，点「生成文章」';
+      };
+    });
+    $('ghLoad').textContent = '换一批';
+  } catch (e) {
+    $('ghList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
+    $('ghLoad').textContent = '重试';
+  } finally {
+    $('ghLoad').disabled = false;
+  }
+};
 
 /* ============================ 视频 ============================ */
 

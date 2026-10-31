@@ -12,6 +12,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,40 @@ async def fetch_preview(payload: FetchIn) -> dict[str, Any]:
     }
 
 
+@app.get("/api/trending/github")
+async def github_trending(days: int = 7, limit: int = 10) -> dict[str, Any]:
+    """GitHub 近 N 天热点仓库。给「热点 → 文章」链当选题池。"""
+    from .pipeline.fetch import FetchError, github_trending
+
+    try:
+        items = await github_trending(days=days, limit=limit)
+    except FetchError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"days": days, "items": items}
+
+
+@app.get("/api/articles/{task_id}/md")
+async def article_markdown(task_id: str) -> Any:
+    """文章的 Markdown 原文，带下载头。产物页是给眼睛看的，发平台要的是 md。"""
+    from .pipeline import runs
+
+    r = runs.get(settings.data_dir, task_id)
+    if not r or r.get("kind") != "article":
+        raise HTTPException(404, "没有这篇文章的记录")
+    body = r.get("body") or ""
+    if not body:
+        raise HTTPException(404, "这条记录没有正文（可能是旧任务）")
+    from fastapi import Response
+
+    name = (r.get("brief") or {}).get("topic") or task_id
+    safe = "".join(c for c in name if c.isalnum() or c in "._-－")[:40] or task_id
+    return Response(
+        content=body,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.md"'},
+    )
+
+
 @app.post("/api/memory")
 async def memory_write(payload: MemoryIn) -> dict[str, Any]:
     """写一条项目记忆（人设卡 / 禁用词 / 语气 / 历史选题）。"""
@@ -337,6 +372,31 @@ async def _run(
         task.result = result
         await task.push({"type": "done", "url": f"/r/{task.id}", "result": result})
         task.status = "done"
+
+        # 文章链路也留痕：复盘要能把「文案」和「视频」放在一起比
+        from .pipeline import runs
+
+        runs.save(
+            settings.data_dir,
+            {
+                "task_id": task.id,
+                "kind": "article",
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "input": user_input[:2000],
+                "platform": platform,
+                "brief": brief.model_dump(),
+                "provider": "deepseek" if not result["mocked"] else "mock",
+                "model": result["model"],
+                "body": result["body"],  # md 下载端点从这里取
+                "rounds": result["rounds"],
+                "kept_round": result["kept_round"],
+                "final_score": result.get("final_score"),
+                "word_count": result["word_count"],
+                "elapsed_ms": result["elapsed_ms"],
+                "artifact": f"/r/{task.id}",
+                "degraded": False,
+            },
+        )
     except Exception as exc:  # 任何异常都要让前端知道，不能静默失败
         await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
         task.status = "failed"
@@ -400,6 +460,24 @@ async def task_detail(task_id: str) -> dict[str, Any]:
     return {"id": task.id, "status": task.status, "result": task.result}
 
 
+@app.get("/api/runs")
+async def list_runs(limit: int = 30) -> dict[str, Any]:
+    """生成记录列表（新的在前）。复盘入口：哪次用哪个模型、过没过闸、花多久。"""
+    from .pipeline import runs
+
+    return {"runs": runs.list_runs(settings.data_dir, limit=min(limit, 100))}
+
+
+@app.get("/api/runs/{task_id}")
+async def get_run(task_id: str) -> dict[str, Any]:
+    from .pipeline import runs
+
+    r = runs.get(settings.data_dir, task_id)
+    if r is None:
+        raise HTTPException(404, "没有这条记录")
+    return r
+
+
 @app.get("/api/styles")
 async def styles() -> dict[str, Any]:
     """风格清单，供前端「视频风格选择器」使用。"""
@@ -459,13 +537,29 @@ async def video_render(payload: RenderIn) -> dict[str, str]:
 async def _run_video(
     task: TaskState, task_id: str, payload: RenderIn, plan_obj: Any
 ) -> None:
-    from .pipeline import opus_video
+    from .pipeline import opus_video, runs
     from .pipeline.video import save_video
 
+    started = time.time()
     task.status = "running"
+    record: dict[str, Any] = {
+        "task_id": task_id,
+        "kind": "video",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "input": payload.input,
+        "url": payload.url,
+        "platform": payload.platform,
+        "plan": plan_obj.model_dump(),
+        "degraded": False,
+        "attempts": [],
+        "gate": None,
+        "provider": None,
+        "model": None,
+    }
     try:
         await task.push({"type": "stage", "stage": "brief", "label": "整理内容为分镜素材"})
         brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
+        record["brief"] = brief.model_dump()
 
         provider = registry.resolve("video")
         # mock 模式绝不调模型：验证链路不该花钱
@@ -482,6 +576,10 @@ async def _run_video(
 
         if provider is not None:
             res = await opus_video.generate(llm, brief, plan_obj)
+            record["provider"] = res.provider_label
+            record["model"] = res.model
+            record["attempts"] = res.history
+            record["gate"] = {"ok": res.gate.ok, "failures": res.gate.failures, "stats": res.gate.stats}
             await task.push(
                 {
                     "type": "gate",
@@ -497,12 +595,14 @@ async def _run_video(
             if degraded:
                 # 闸门没过：宁可给模板片，也不给空白页
                 await task.push({"type": "note", "text": "模型产物未过闸门，降级到模板渲染"})
-                path = save_video(
+                save_video(
                     brief, "", task_id, settings.data_dir, plan_obj.style or "hud",
                     f"{plan_obj.name} · 降级模板",
                 )
+                record["degrade_reason"] = "闸门未通过：" + "；".join(res.gate.failures)
+                record["rejected_html_chars"] = len(res.html)
             else:
-                path = opus_video.save(
+                opus_video.save(
                     html,
                     task_id,
                     settings.data_dir,
@@ -516,23 +616,41 @@ async def _run_video(
                 )
         else:
             # 视频模型没配凭据：直接走模板，不阻塞整条链路
-            await task.push({"type": "note", "text": "视频模型未配置，使用模板渲染"})
-            path = save_video(brief, "", task_id, settings.data_dir, plan_obj.style or "hud", f"{plan_obj.name} · 模板")
+            note = "mock 模式，不调模型" if settings.mock else "视频模型未配置，使用模板渲染"
+            await task.push({"type": "note", "text": note})
+            save_video(brief, "", task_id, settings.data_dir, plan_obj.style or "hud", f"{plan_obj.name} · 模板")
             res = None
             degraded = True
+            record["model"] = "template"
+            record["degrade_reason"] = note
 
-        task.status = "done"
-        task.result = {
+        record["degraded"] = degraded
+        record["artifact"] = f"/v/{task_id}"
+        record["result"] = {
             "video_url": f"/v/{task_id}",
             "brief": brief.model_dump(),
             "plan": plan_obj.model_dump(),
             "degraded": degraded,
             "model": (res.model if res else "template"),
         }
+        task.status = "done"
+        task.result = record["result"]
         await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded})
     except Exception as exc:
         task.status = "failed"
+        record["error"] = f"{type(exc).__name__}: {exc}"
         await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+    except Exception as exc:
+        task.status = "failed"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+    finally:
+        # 失败也留痕：复盘时"它为什么挂"和"它怎么成的"同样重要
+        record["elapsed_ms"] = int((time.time() - started) * 1000)
+        try:
+            runs.save(settings.data_dir, record)
+        except Exception:
+            pass  # 留痕失败不该反过来拖垮任务结果
 
 
 @app.post("/api/video")

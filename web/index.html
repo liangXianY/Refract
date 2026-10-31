@@ -79,6 +79,12 @@
         <button data-w="long">长</button>
       </div>
 
+      <label class="lb mt">GitHub 热点选题<span class="opt">点了才请求</span></label>
+      <div class="trending" id="ghTrending">
+        <button class="ghost" id="ghLoad">拉最近 7 天热点</button>
+        <div class="tlist" id="ghList"></div>
+      </div>
+
       <button id="artGo" class="primary">生成文章</button>
       <p class="hint" id="artHint">Mock 模式不消耗 token。</p>
 
@@ -94,6 +100,7 @@
       <div class="tabs">
         <button class="tab on" data-v="doc">正文</button>
         <button class="tab" data-v="reflect">反思记录 <b id="rCount">0</b></button>
+        <span class="tab-spacer" id="artDlSlot"></span>
       </div>
       <div class="view on" id="viewDoc">
         <div class="empty" id="artEmpty">

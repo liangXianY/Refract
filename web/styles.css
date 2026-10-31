@@ -431,3 +431,18 @@ footer{
   cursor:pointer;font-family:inherit;font-size:11px;color:var(--ink2);transition:.16s;
 }
 .ghost:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ---------- GitHub 热点选题 ---------- */
+.trending{margin-top:18px}
+.tlist{margin-top:8px;display:flex;flex-direction:column;gap:5px;max-height:220px;overflow:auto}
+.titem{
+  text-align:left;border:1px solid var(--line);border-radius:8px;background:#fff;
+  padding:7px 10px;cursor:pointer;font-family:inherit;transition:.15s;display:block;width:100%;
+}
+.titem:hover{border-color:#cfcfc8}
+.titem.on{border-color:var(--accent);background:var(--accent-soft)}
+.titem b{display:block;font-size:11.5px;font-family:var(--mono);font-weight:600;letter-spacing:-.01em}
+.titem span{font-size:10px;color:var(--accent);font-family:var(--mono)}
+.titem em{display:block;font-style:normal;font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:2px}
+.tab-spacer{margin-left:auto;display:flex;align-items:center;gap:8px}
+#artDlSlot a{text-decoration:none}
