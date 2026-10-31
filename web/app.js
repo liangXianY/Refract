@@ -196,13 +196,15 @@ async function sendChat(text) {
 
   let raw = '';
   let pending = false;
-  const flush = () => {
+  let settled = false;   // 收尾后，排队的 rAF 不许再把带光标的版本写回去
+  const flush = (withCursor) => {
     if (pending) return;
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
+      if (settled && withCursor) return;   // 竞态防护：收尾后的延迟刷新直接丢弃
       mdBox.hidden = false;
-      mdBox.innerHTML = renderMd(raw, true);
+      mdBox.innerHTML = renderMd(raw, withCursor && !settled);
       chatlog.scrollTop = chatlog.scrollHeight;
     });
   };
@@ -263,7 +265,7 @@ async function sendChat(text) {
             $('chatHint').textContent = `第 ${ev.reflection.round} 轮 ${ev.reflection.total} 分`;
             break;
           case 'delta':
-            if (ev.kind === 'content') { raw += ev.text; flush(); }
+            if (ev.kind === 'content') { raw += ev.text; flush(true); }
             break;
           case 'artifact':
             if (ev.artifact === 'article') {
@@ -291,6 +293,7 @@ async function sendChat(text) {
       },
       '/api/chat'
     );
+    settled = true;
     if (raw) { mdBox.hidden = false; mdBox.innerHTML = renderMd(raw, false); }
     if (!flow.children.length && !raw) {
       mdBox.hidden = false;
@@ -298,6 +301,7 @@ async function sendChat(text) {
     }
     $('chatHint').textContent = '主 Agent 待命';
   } catch (e) {
+    settled = true;
     mdBox.hidden = false;
     if (raw) mdBox.innerHTML = renderMd(raw, false);   // 收到多少显示多少，光标必须摘掉
     else mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
