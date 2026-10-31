@@ -52,7 +52,8 @@ mcp = MCPServer(
     ),
 )
 
-llm = LLMClient(settings)
+from app.config import registry  # noqa: E402
+llm = LLMClient(settings, registry)
 memory = init_memory(settings.data_dir / "memory.db")
 
 

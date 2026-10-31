@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .config import registry
 from .llm import LLMClient
 from .pipeline.engine import run_pipeline
 from .pipeline.renderer import save_artifact
@@ -29,7 +30,7 @@ from .pipeline.video import save_video, styles_meta
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="内容生产 Agent", version="0.1.0")
-llm = LLMClient(settings)
+llm = LLMClient(settings, registry)
 
 # 记忆库：SQLite 落在 data/ 下，进程启动时初始化一次
 from .pipeline.memory import init_memory, get_memory  # noqa: E402
@@ -75,6 +76,21 @@ class VideoIn(BaseModel):
     style: str = Field(default="hud")
 
 
+class PlansIn(BaseModel):
+    """出方案：只要内容，不要风格——风格由方案本身定。"""
+
+    input: str = Field(default="", max_length=4000)
+    url: str = Field(default="", max_length=2000)
+    platform: str = Field(default="video", pattern="^(wechat|xiaohongshu|video)$")
+    words: str = Field(default="medium", pattern="^(short|medium|long)$")
+
+
+class RenderIn(PlansIn):
+    """成片：带上一轮选定的方案原样回传。"""
+
+    plan: dict[str, Any]
+
+
 class TaskState:
     def __init__(self, task_id: str) -> None:
         self.id = task_id
@@ -100,7 +116,37 @@ async def health() -> dict[str, Any]:
         "model": settings.model,
         "ready": settings.is_ready,
         "tasks": len(TASKS),
+        "routes": {r: (d["active"] or {}).get("model") for r, d in registry.snapshot()["routes"].items()},
     }
+
+
+# ---------------------------------------------------------------- 模型路由
+
+
+class RouteIn(BaseModel):
+    route: str = Field(pattern="^(text|video)$")
+    # 有序降级链，第一个就是主力
+    chain: list[str] = Field(min_length=1, max_length=4)
+
+
+@app.get("/api/models")
+async def models() -> dict[str, Any]:
+    """当前路由快照：哪类活用哪个模型、有没有配好凭据。
+
+    这个接口就是「服务器支持模型切换」的查询端。
+    面试时可以直接 curl 一下：文案走 DeepSeek，视频走 Opus。
+    """
+    return registry.snapshot()
+
+
+@app.post("/api/models/route")
+async def set_route(payload: RouteIn) -> dict[str, Any]:
+    """运行时切换模型，落盘到 data/models.json，重启后仍生效。"""
+    try:
+        registry.set_route(payload.route, payload.chain)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "routes": registry.snapshot()["routes"]}
 
 
 @app.post("/api/intent")
@@ -354,6 +400,135 @@ async def task_detail(task_id: str) -> dict[str, Any]:
 async def styles() -> dict[str, Any]:
     """风格清单，供前端「视频风格选择器」使用。"""
     return {"styles": styles_meta()}
+
+
+async def _build_brief(input_text: str, url: str, platform: str, words: str):
+    """输入 → ContentBrief。链接先抓正文再归一化。"""
+    from .pipeline.brief import plan
+    from .pipeline.fetch import FetchError, fetch_url
+
+    text = input_text.strip()
+    if url:
+        try:
+            page = await fetch_url(url)
+        except FetchError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        text = (text + "\n\n【抓取到的正文】\n" + page.text[:8000]).strip()
+    if not text:
+        raise HTTPException(400, "input 和 url 至少给一个")
+    return await plan(llm, text, platform, words)
+
+
+@app.post("/api/video/plans")
+async def video_plans(payload: PlansIn) -> dict[str, Any]:
+    """第一步：先出三套方案（xilo 的做法，避免选错方向重跑成片）。"""
+    from .pipeline.director import recommend_plans
+
+    brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
+    ps = await recommend_plans(llm, brief)
+    return {
+        "brief": brief.model_dump(),
+        "plans": [p.model_dump() for p in ps.plans],
+        "model": ps.model,
+        "mocked": ps.mocked,
+        "provider": registry.describe("video"),
+    }
+
+
+@app.post("/api/video/render")
+async def video_render(payload: RenderIn) -> dict[str, str]:
+    """第二步：按选定方案让视频模型写整份动画 HTML，过闸门后出片。"""
+    from .pipeline.director import VideoPlan
+
+    try:
+        plan_obj = VideoPlan(**payload.plan)
+    except Exception as exc:
+        raise HTTPException(400, f"方案格式不对：{exc}") from exc
+
+    task_id = uuid.uuid4().hex[:12]
+    task = TaskState(task_id)
+    TASKS[task_id] = task
+    asyncio.create_task(_run_video(task, task_id, payload, plan_obj))
+    return {"task_id": task_id}
+
+
+async def _run_video(
+    task: TaskState, task_id: str, payload: RenderIn, plan_obj: Any
+) -> None:
+    from .pipeline import opus_video
+    from .pipeline.video import save_video
+
+    task.status = "running"
+    try:
+        await task.push({"type": "stage", "stage": "brief", "label": "整理内容为分镜素材"})
+        brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
+
+        provider = registry.resolve("video")
+        # mock 模式绝不调模型：验证链路不该花钱
+        if settings.mock:
+            provider = None
+        await task.push(
+            {
+                "type": "stage",
+                "stage": "render",
+                "label": f"{provider.label if provider else '模板'} 生成动画",
+                "model": provider.model if provider else "template",
+            }
+        )
+
+        if provider is not None:
+            res = await opus_video.generate(llm, brief, plan_obj)
+            await task.push(
+                {
+                    "type": "gate",
+                    "ok": res.gate.ok,
+                    "failures": res.gate.failures,
+                    "stats": res.gate.stats,
+                    "attempts": res.attempts,
+                    "model": res.model,
+                }
+            )
+            html = opus_video.wrap_meta(res.html, plan_obj, res)
+            degraded = not res.gate.ok
+            if degraded:
+                # 闸门没过：宁可给模板片，也不给空白页
+                await task.push({"type": "note", "text": "模型产物未过闸门，降级到模板渲染"})
+                path = save_video(
+                    brief, "", task_id, settings.data_dir, plan_obj.style or "hud",
+                    f"{plan_obj.name} · 降级模板",
+                )
+            else:
+                path = opus_video.save(
+                    html,
+                    task_id,
+                    settings.data_dir,
+                    {
+                        "plan": plan_obj.model_dump(),
+                        "model": res.model,
+                        "provider": res.provider_label,
+                        "gate": {"ok": res.gate.ok, "stats": res.gate.stats},
+                        "attempts": res.attempts,
+                    },
+                )
+        else:
+            # 视频模型没配凭据：直接走模板，不阻塞整条链路
+            await task.push({"type": "note", "text": "视频模型未配置，使用模板渲染"})
+            path = save_video(brief, "", task_id, settings.data_dir, plan_obj.style or "hud", f"{plan_obj.name} · 模板")
+            res = None
+            degraded = True
+
+        task.status = "done"
+        task.result = {
+            "video_url": f"/v/{task_id}",
+            "brief": brief.model_dump(),
+            "plan": plan_obj.model_dump(),
+            "degraded": degraded,
+            "model": (res.model if res else "template"),
+        }
+        await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded})
+    except Exception as exc:
+        task.status = "failed"
+        await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
 
 
 @app.post("/api/video")

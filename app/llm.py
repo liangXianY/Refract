@@ -1,12 +1,22 @@
-"""DeepSeek 客户端。
+"""模型客户端：一套接口，两套协议。
 
-两个入口：
-  structured() —— 要求返回 JSON，带校验与重试，用于 Planner / Reflector
+三个入口：
+  structured() —— 要求返回 JSON，带校验与重试，用于 Planner / Reflector / 方案推荐
   stream()     —— 流式文本，用于 Executor
+  complete()   —— 一次性返回纯文本，用于「生成一个完整 HTML 动画文件」这类长输出
 
-关于模型的一个事实：deepseek-flash 是推理模型，响应里带 reasoning_content。
+按 route 路由到不同厂商（见 models.py）：
+  route="text"  → DeepSeek（快、便宜）
+  route="video" → Opus（代码与视觉理解强）
+
+关于 DeepSeek 的一个事实：deepseek-flash 是推理模型，响应里带 reasoning_content。
 流式时必须把它和正文分开处理——前端拿它显示"思考中"，
 否则用户会觉得卡住了。它按 token 计费，所以 max_tokens 要给推理留余量。
+
+关于 Anthropic 协议的三处差异（踩过才知道）：
+  1. system 是顶层字段，不是 messages 里的一个 role
+  2. 没有 response_format，JSON 只能靠提示词约束
+  3. 截断是 stop_reason == "max_tokens"，不是 finish_reason == "length"
 """
 
 from __future__ import annotations
@@ -18,8 +28,10 @@ from typing import AsyncIterator
 
 import httpx
 
-from . import mock
 from .config import Settings
+from .models import ModelRegistry, Provider
+
+ANTHROPIC_VERSION = "2023-06-01"
 
 
 class LLMError(RuntimeError):
@@ -48,37 +60,85 @@ def loads_loose(text: str) -> dict:
         raise
 
 
+def strip_fence(text: str) -> str:
+    """去掉 ```html 围栏。模型生成整份文件时几乎必加，直接存会渲染成纯文本。"""
+    t = (text or "").strip()
+    m = re.match(r"^```[a-zA-Z]*\s*\n(.*)\n```\s*$", t, re.S)
+    if m:
+        return m.group(1).strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    return t.strip()
+
+
 class LLMClient:
-    def __init__(self, cfg: Settings) -> None:
+    def __init__(self, cfg: Settings, registry: ModelRegistry) -> None:
         self.cfg = cfg
-        self._client = httpx.AsyncClient(
-            base_url=cfg.base_url,
-            timeout=httpx.Timeout(180.0, connect=15.0),
-            headers={"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {},
-        )
+        self.registry = registry
+        self._clients: dict[str, httpx.AsyncClient] = {}
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        for c in self._clients.values():
+            await c.aclose()
+        self._clients.clear()
 
-    # ------------------------------------------------------------------ 工具
+    # ---------------------------------------------------------------- 路由
 
-    async def _post(self, payload: dict) -> httpx.Response:
+    def provider(self, route: str) -> Provider:
+        p = self.registry.resolve(route)
+        if p is None:
+            cand = self.registry.candidate(route)
+            hint = f"（首选 {cand.label} 未配置凭据）" if cand else ""
+            raise LLMError(f"用途 {route} 没有可用模型{hint}，请检查环境变量或路由配置")
+        return p
+
+    def _client(self, p: Provider) -> httpx.AsyncClient:
+        key = f"{p.key}|{p.base_url}|{p.api_key[-6:]}"
+        c = self._clients.get(key)
+        if c is None:
+            if p.protocol == "anthropic":
+                headers = {
+                    "content-type": "application/json",
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    # 中转站认 Bearer，官方认 x-api-key；两个都发，谁都拦不住
+                    "authorization": f"Bearer {p.api_key}",
+                    "x-api-key": p.api_key,
+                }
+            else:
+                headers = {"Authorization": f"Bearer {p.api_key}"}
+            c = httpx.AsyncClient(
+                timeout=httpx.Timeout(300.0, connect=15.0),
+                headers=headers,
+                follow_redirects=True,
+            )
+            self._clients[key] = c
+        return c
+
+    @staticmethod
+    def _v1(p: Provider, path: str) -> str:
+        """base 可能已经带 /v1，避免拼成 /v1/v1。"""
+        base = p.base_url.rstrip("/")
+        return base + path if base.endswith("/v1") else base + "/v1" + path
+
+    async def _post(self, p: Provider, url: str, payload: dict) -> httpx.Response:
+        client = self._client(p)
         last: Exception | None = None
         for attempt in range(2):
             try:
-                resp = await self._client.post("/chat/completions", json=payload)
+                resp = await client.post(url, json=payload)
                 if resp.status_code in (429, 500, 502, 503, 504) and attempt == 0:
                     await asyncio.sleep(1.5)
                     continue
                 if resp.status_code >= 400:
-                    raise LLMError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                    raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {resp.text[:300]}")
                 return resp
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last = exc
                 if attempt == 0:
                     await asyncio.sleep(1.0)
                     continue
-                raise LLMError(f"网络错误：{exc}") from exc
+                raise LLMError(f"[{p.label}] 网络错误：{exc}") from exc
         raise LLMError(str(last) if last else "unknown")
 
     # -------------------------------------------------------------- 结构化
@@ -91,34 +151,26 @@ class LLMClient:
         max_tokens: int = 2000,
         temperature: float = 0.3,
         validate=None,
+        route: str = "text",
     ) -> dict:
         """返回解析后的 JSON。解析或校验失败时，把错误回灌给模型重试一次。"""
-        payload = {
-            "model": self.cfg.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-
+        p = self.provider(route)
         last_error = ""
+        budget = max_tokens
+
         for attempt in range(2):
-            resp = await self._post(payload)
-            data = resp.json()
-            choice = (data.get("choices") or [{}])[0]
-            content = (choice.get("message") or {}).get("content") or ""
-            finish = choice.get("finish_reason")
+            if p.protocol == "anthropic":
+                content, stop = await self._anthropic_once(p, system, user, budget, temperature)
+            else:
+                content, stop = await self._openai_once(p, system, user, budget, temperature)
 
             # 推理模型的 reasoning token 和正文共用 max_tokens 额度，
             # 额度给少了会把 JSON 拦腰截断。这种情况必须放大额度重试，
             # 而不是把半截 JSON 塞回去让模型"修格式"——它修不了。
-            if finish == "length":
-                last_error = "输出被截断（finish_reason=length）"
+            if stop in ("length", "max_tokens"):
+                last_error = f"输出被截断（{stop}）"
                 if attempt == 0:
-                    payload["max_tokens"] = min(8000, int(payload["max_tokens"] * 1.7))
+                    budget = min(16000, int(budget * 1.7))
                     continue
                 raise LLMError(last_error)
 
@@ -130,16 +182,92 @@ class LLMClient:
             except Exception as exc:  # JSON 错 / schema 错
                 last_error = f"{type(exc).__name__}: {exc}"
                 if attempt == 0:
-                    payload["messages"] = [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                        {
-                            "role": "user",
-                            "content": f"你上一次的输出不合法（{last_error}）。只输出合法 JSON，不要解释。",
-                        },
-                    ]
+                    user = (
+                        user
+                        + f"\n\n你上一次的输出不合法（{last_error}）。只输出合法 JSON，不要解释。"
+                    )
                     continue
         raise LLMError(f"结构化输出连续失败：{last_error}")
+
+    async def _openai_once(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> tuple[str, str]:
+        payload = {
+            "model": p.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        resp = await self._post(p, self._v1(p, "/chat/completions"), payload)
+        choice = (resp.json().get("choices") or [{}])[0]
+        content = (choice.get("message") or {}).get("content") or ""
+        return content, choice.get("finish_reason") or ""
+
+    async def _anthropic_once(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> tuple[str, str]:
+        payload = {
+            "model": p.model,
+            "max_tokens": min(max_tokens, p.max_tokens),
+            "system": system + "\n\n只输出合法 JSON，不要任何额外文字或 Markdown 围栏。",
+            "messages": [{"role": "user", "content": user}],
+            "temperature": temperature,
+        }
+        resp = await self._post(p, self._v1(p, "/messages"), payload)
+        data = resp.json()
+        text = "".join(
+            b.get("text", "") for b in data.get("content") or [] if b.get("type") == "text"
+        )
+        return text, data.get("stop_reason") or ""
+
+    # ---------------------------------------------------------------- 纯文本
+
+    async def complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int = 8000,
+        temperature: float = 0.7,
+        route: str = "video",
+    ) -> tuple[str, Provider]:
+        """一次性长输出，返回 (文本, 实际使用的 provider)。
+
+        视频成片代码就靠这个：几千 token 的 HTML 没法流式拼装校验，
+        必须整份拿到再跑闸门。
+        """
+        p = self.provider(route)
+        if p.protocol == "anthropic":
+            payload = {
+                "model": p.model,
+                "max_tokens": min(max_tokens, p.max_tokens),
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+                "temperature": temperature,
+            }
+            resp = await self._post(p, self._v1(p, "/messages"), payload)
+            data = resp.json()
+            text = "".join(
+                b.get("text", "") for b in data.get("content") or [] if b.get("type") == "text"
+            )
+            return strip_fence(text), p
+
+        payload = {
+            "model": p.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        resp = await self._post(p, self._v1(p, "/chat/completions"), payload)
+        choice = (resp.json().get("choices") or [{}])[0]
+        return strip_fence((choice.get("message") or {}).get("content") or ""), p
 
     # ---------------------------------------------------------------- 流式
 
@@ -150,10 +278,24 @@ class LLMClient:
         user: str,
         max_tokens: int = 2400,
         temperature: float = 0.6,
+        route: str = "text",
     ) -> AsyncIterator[tuple[str, str]]:
         """产出 (kind, text)，kind ∈ {reasoning, content}。"""
+        p = self.provider(route)
+        if p.protocol == "anthropic":
+            gen: AsyncIterator[tuple[str, str]] = self._stream_anthropic(
+                p, system, user, max_tokens, temperature
+            )
+        else:
+            gen = self._stream_openai(p, system, user, max_tokens, temperature)
+        async for item in gen:
+            yield item
+
+    async def _stream_openai(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> AsyncIterator[tuple[str, str]]:
         payload = {
-            "model": self.cfg.model,
+            "model": p.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -162,10 +304,11 @@ class LLMClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        async with self._client.stream("POST", "/chat/completions", json=payload) as resp:
+        client = self._client(p)
+        async with client.stream("POST", self._v1(p, "/chat/completions"), json=payload) as resp:
             if resp.status_code >= 400:
                 body = (await resp.aread()).decode()[:300]
-                raise LLMError(f"HTTP {resp.status_code}: {body}")
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {body}")
             async for line in resp.aiter_lines():
                 if not line.startswith("data:"):
                     continue
@@ -181,6 +324,40 @@ class LLMClient:
                     yield "reasoning", reasoning
                 if text := delta.get("content"):
                     yield "content", text
+
+    async def _stream_anthropic(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> AsyncIterator[tuple[str, str]]:
+        payload = {
+            "model": p.model,
+            "max_tokens": min(max_tokens, p.max_tokens),
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+            "stream": True,
+            "temperature": temperature,
+        }
+        client = self._client(p)
+        async with client.stream("POST", self._v1(p, "/messages"), json=payload) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode()[:300]
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {body}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if not chunk or chunk == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                kind = obj.get("type")
+                if kind == "content_block_delta":
+                    d = obj.get("delta") or {}
+                    if d.get("type") == "text_delta" and d.get("text"):
+                        yield "content", d["text"]
+                    elif d.get("type") == "thinking_delta" and d.get("thinking"):
+                        yield "reasoning", d["thinking"]
 
 
 def estimate_tokens(text: str) -> int:

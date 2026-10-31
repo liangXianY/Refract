@@ -32,8 +32,8 @@ function renderMd(text, withCursor) {
 }
 
 /** 起任务 + 读 SSE。onEvent 收到每一个事件。 */
-async function runTask(payload, onEvent) {
-  const resp = await fetch('/api/generate', {
+async function runTask(payload, onEvent, path = '/api/generate') {
+  const resp = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -312,86 +312,156 @@ $('artInput').addEventListener('keydown', (e) => {
 
 /* ============================ 视频 ============================ */
 
-let vidStyle = 'auto', vidLen = '60', vidBusy = false;
+/* 流程按 xilo-opus-video 的方法论：
+   先出三套方案 → 人选 → 再让视频模型写整份动画。
+   一步直达的问题不是慢，是选错方向后整份渲染代码全废。 */
 
-document.querySelectorAll('#vidStyle button').forEach(b => {
-  b.onclick = () => {
-    document.querySelectorAll('#vidStyle button').forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); vidStyle = b.dataset.s;
-  };
-});
-document.querySelectorAll('#vidLen button').forEach(b => {
-  b.onclick = () => {
-    document.querySelectorAll('#vidLen button').forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); vidLen = b.dataset.l;
-  };
-});
-document.querySelectorAll('#modeVideo .tab').forEach(tab => {
-  tab.onclick = () => {
-    document.querySelectorAll('#modeVideo .tab').forEach(t => t.classList.remove('on'));
-    tab.classList.add('on');
-    document.querySelectorAll('#modeVideo .view').forEach(v => v.classList.remove('on'));
-    $('view' + tab.dataset.v.charAt(0).toUpperCase() + tab.dataset.v.slice(1)).classList.add('on');
-  };
-});
+let vidBusy = false;
+let vidPlans = [];
+let vidBrief = null;
 
-async function genVideo() {
-  const text = $('vidInput').value.trim();
-  if (text.length < 2 || vidBusy) return;
-  vidBusy = true;
-  $('vidGo').disabled = true;
-  $('vidGo').textContent = '生成中…';
-  $('sbList').innerHTML = '<span class="ph">正在生成分镜…</span>';
-  $('playerBox').innerHTML = '<p class="ph">正在渲染…</p>';
-
+async function loadModels() {
   try {
-    const done = await runTask(
-      {
-        input: text, platform: 'video', style: vidStyle,
-        words: vidLen === '30' ? 'short' : vidLen === '90' ? 'long' : 'medium',
-      },
-      (ev) => {
-        if (ev.type === 'brief') renderStoryboard(ev.brief, vidLen);
-        if (ev.type === 'stage') $('vidHint').textContent = ev.label;
-      }
-    );
-
-    $('playerBox').innerHTML = `
-      <div class="prow">
-        <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
-        <span class="meta">${done.result.style || vidStyle} · ${done.result.rounds.length} 轮</span>
-      </div>
-      <iframe src="${done.url}" title="视频成品"></iframe>`;
-    $('vidHint').textContent = `完成 · ${(done.result.elapsed_ms / 1000).toFixed(1)}s`;
-    $('cost').textContent = `${done.result.word_count} 字 · ${done.result.model}`;
-    $('vidGo').textContent = '重新生成';
-  } catch (e) {
-    $('playerBox').innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
-    $('vidHint').textContent = '失败：' + e.message;
-    $('vidGo').textContent = '重试';
-  } finally {
-    vidBusy = false;
-    $('vidGo').disabled = false;
+    const m = await (await fetch('/api/models')).json();
+    const v = m.routes.video;
+    const active = v.active;
+    $('vidModel').innerHTML = active
+      ? `<b>${esc(active.label)}</b><span>${esc(active.model)}</span>
+         ${v.fallback ? '<i class="warn">（首选未配凭据，已降级）</i>' : ''}`
+      : '<span class="ph">视频模型未配置，将用模板渲染</span>';
+  } catch {
+    $('vidModel').innerHTML = '<span class="ph">读取失败</span>';
   }
 }
 
-/** 大纲 → 分镜。每节一个镜头，秒数按总时长均分。 */
-function renderStoryboard(brief, totalSec) {
-  const sections = brief.outline || [];
-  if (!sections.length) return;
-  const per = Math.max(3, Math.round(+totalSec / sections.length));
-  const rows = sections.map((s, i) => `
-    <div class="sb-item"><b>S${String(i + 1).padStart(2, '0')}</b>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.heading)}</span>
-      <span style="color:var(--dim);font-family:var(--mono);font-size:9.5px">${per}s</span></div>`).join('');
-  $('sbList').innerHTML = rows;
-  $('shotList').innerHTML = rows +
-    `<p class="ph" style="margin-top:14px">镜头类型后续会区分：标题卡 / 截图卡 / 数据卡 / 纯文字；转场按风格配置切换。</p>`;
+async function makePlans() {
+  const text = $('vidInput').value.trim();
+  const url = $('vidUrl').value.trim();
+  if ((text.length < 2 && !url) || vidBusy) return;
+
+  vidBusy = true;
+  $('vidPlan').disabled = true;
+  $('vidPlan').textContent = '正在想方案…';
+  $('vidHint').textContent = '分析内容特征，给出三套不同的拍法';
+  $('planList').innerHTML = '<p class="ph">生成中…</p>';
+  $('playerBox').hidden = true;
+
+  try {
+    const resp = await fetch('/api/video/plans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: text, url, platform: 'video' }),
+    });
+    if (!resp.ok) {
+      let d = resp.statusText;
+      try { d = (await resp.json()).detail || d; } catch { /* noop */ }
+      throw new Error(d);
+    }
+    const data = await resp.json();
+    vidPlans = data.plans;
+    vidBrief = data.brief;
+    renderPlans(data.plans, data.brief);
+    $('vidHint').textContent = `三套方案 · ${data.model}${data.mocked ? ' · mock' : ''}`;
+  } catch (e) {
+    $('planList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
+    $('vidHint').textContent = '失败：' + e.message;
+  } finally {
+    vidBusy = false;
+    $('vidPlan').disabled = false;
+    $('vidPlan').textContent = '重新出方案';
+  }
 }
 
-$('vidGo').onclick = genVideo;
+function renderPlans(plans, brief) {
+  const head = `
+    <div class="planhead">
+      <b>${esc(brief.topic)}</b>
+      <span>${esc(brief.audience)} · 钩子：${esc(brief.hook || '—')}</span>
+    </div>`;
+
+  const cards = plans.map((p, i) => `
+    <article class="plan" data-i="${i}">
+      <header>
+        <span class="pid">${esc(p.id)}</span>
+        <h4>${esc(p.name)}</h4>
+        <span class="ptag">${esc(p.style)} · ${p.duration}s</span>
+      </header>
+      <p class="pc">${esc(p.concept)}</p>
+      <p class="pw"><em>为什么</em>${esc(p.why)}</p>
+      <p class="pm"><em>运动</em>${esc(p.motion)}</p>
+      <ol class="pbeats">${(p.beats || []).map(b => `<li>${esc(b)}</li>`).join('')}</ol>
+      <div class="pfoot">
+        <div class="swatches">${(p.palette || []).map(c => `<i style="background:${esc(c)}"></i>`).join('')}</div>
+        <button class="go" data-i="${i}">用这套拍</button>
+      </div>
+    </article>`).join('');
+
+  $('planList').innerHTML = head + `<div class="plangrid">${cards}</div>`;
+  document.querySelectorAll('.plan .go').forEach(b => {
+    b.onclick = () => renderVideo(+b.dataset.i);
+  });
+}
+
+async function renderVideo(idx) {
+  if (vidBusy) return;
+  const plan = vidPlans[idx];
+  if (!plan) return;
+
+  vidBusy = true;
+  document.querySelectorAll('.plan .go').forEach(b => { b.disabled = true; });
+  $('planList').hidden = true;
+  $('playerBox').hidden = false;
+  $('playerBox').innerHTML = `
+    <div class="pstage"><div class="spin"></div>
+      <p>正在按「${esc(plan.name)}」写动画…</p>
+      <span id="pstageTx">视频模型逐帧代码生成，通常 40-90 秒</span></div>`;
+  $('vidHint').textContent = '生成中…';
+
+  try {
+    const done = await runTask(
+      { input: $('vidInput').value.trim(), url: $('vidUrl').value.trim(), platform: 'video', plan },
+      (ev) => {
+        if (ev.type === 'stage') {
+          const tx = document.getElementById('pstageTx');
+          if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
+        }
+        if (ev.type === 'gate') {
+          const tx = document.getElementById('pstageTx');
+          if (tx) tx.textContent = ev.ok
+            ? `闸门通过 · 第 ${ev.attempts} 版 · 覆盖 ${Math.round((ev.stats.phrase_cover || 0) * 100)}%`
+            : `未过闸门：${(ev.failures || [])[0] || ''}`;
+        }
+      },
+      '/api/video/render'
+    );
+
+    const d = done.degraded;
+    $('playerBox').innerHTML = `
+      <div class="prow">
+        <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
+        <span class="meta">${esc(plan.name)} · ${esc(done.result.model || '')}${d ? ' · 降级模板' : ''}</span>
+        <button class="ghost" id="pBack">换一套</button>
+      </div>
+      <iframe src="${done.url}" title="视频成品"></iframe>`;
+    document.getElementById('pBack').onclick = () => {
+      $('playerBox').hidden = true;
+      $('planList').hidden = false;
+      document.querySelectorAll('.plan .go').forEach(b => { b.disabled = false; });
+    };
+    $('vidHint').textContent = d ? '模型产物没过闸门，已降级模板' : '完成 · 可直接播放';
+  } catch (e) {
+    $('playerBox').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
+    $('vidHint').textContent = '失败：' + e.message;
+    $('planList').hidden = false;
+    document.querySelectorAll('.plan .go').forEach(b => { b.disabled = false; });
+  } finally {
+    vidBusy = false;
+  }
+}
+
+$('vidPlan').onclick = makePlans;
 $('vidInput').addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') genVideo();
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') makePlans();
 });
 
 /* ============================ 启动 ============================ */
@@ -412,4 +482,5 @@ $('vidInput').addEventListener('keydown', (e) => {
     setTimeout(genArticle, 500);
   }
   if (QS.has('mode')) switchMode(QS.get('mode'));
+  loadModels();
 })();

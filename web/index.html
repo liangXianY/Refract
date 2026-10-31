@@ -119,48 +119,27 @@
       <label class="lb">视频主题</label>
       <textarea id="vidInput" placeholder="想讲什么？比如：&#10;用 60 秒介绍 Refract 这个项目"></textarea>
 
-      <label class="lb mt">风格</label>
-      <div class="styles" id="vidStyle">
-        <button class="on" data-s="auto"><i class="sw-auto"></i>自动</button>
-        <button data-s="minimal"><i class="sw-min"></i>简约</button>
-        <button data-s="apple"><i class="sw-apple"></i>苹果</button>
-        <button data-s="editorial"><i class="sw-edit"></i>杂志</button>
-        <button data-s="tech"><i class="sw-tech"></i>科技</button>
-        <button data-s="sketch"><i class="sw-sketch"></i>手绘</button>
-      </div>
+      <label class="lb mt">参考链接<span class="opt">可选</span></label>
+      <input id="vidUrl" class="inp" placeholder="https://..." autocomplete="off">
 
-      <label class="lb mt">时长</label>
-      <div class="seg" id="vidLen">
-        <button data-l="30">30 秒</button>
-        <button class="on" data-l="60">60 秒</button>
-        <button data-l="90">90 秒</button>
-      </div>
+      <button id="vidPlan" class="primary">出三套方案</button>
+      <p class="hint" id="vidHint">先给三套拍法，选定再生成成片。</p>
 
-      <button id="vidGo" class="primary">生成视频</button>
-      <p class="hint" id="vidHint">先生成分镜，确认后再渲染。</p>
-
-      <div class="storyboard" id="storyboard">
-        <div class="sbt">分镜</div>
-        <div class="sbl" id="sbList"><span class="ph">生成后这里会列出每个镜头</span></div>
+      <div class="modelbox">
+        <div class="mbt">模型</div>
+        <div class="mbl" id="vidModel"><span class="ph">读取中…</span></div>
       </div>
     </aside>
 
     <div class="work">
-      <div class="tabs">
-        <button class="tab on" data-v="player">播放器</button>
-        <button class="tab" data-v="shots">镜头参数</button>
+      <div id="planList" class="plans">
+        <p class="ph">左边输入主题，点「出三套方案」。<br>三套的视觉语言会真的不一样，挑一个再生成。</p>
       </div>
-      <div class="view on" id="viewPlayer">
-        <div id="playerBox">
-          <p class="ph">生成完成后，这里直接播放成品，可换风格实时重渲染。</p>
-        </div>
-      </div>
-      <div class="view" id="viewShots">
-        <div id="shotList"><p class="ph">每个镜头的类型、时长、素材来源会列在这里。</p></div>
-      </div>
+      <div id="playerBox" hidden></div>
     </div>
   </div>
 </section>
+
 
 <footer>
   <span>FastAPI · SSE 流式 · Plan-Execute-Reflect · 多 Agent</span>

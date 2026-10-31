@@ -364,3 +364,70 @@ footer{
   .split{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
   .modes button{padding:6px 10px;font-size:11px}
 }
+
+/* ---------- 视频：三方案 ---------- */
+.opt{margin-left:6px;font-size:9.5px;color:var(--dim);font-weight:400;letter-spacing:.04em}
+.inp{
+  width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;
+  background:#fff;font-family:inherit;font-size:12px;color:var(--ink);outline:none;transition:.16s;
+}
+.inp:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.inp::placeholder{color:var(--dim)}
+
+.modelbox{margin-top:18px;padding-top:14px;border-top:1px solid var(--line2)}
+.mbt{font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:7px}
+.mbl{font-size:11.5px;color:var(--ink2);line-height:1.7}
+.mbl b{display:block;font-weight:600}
+.mbl span{font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.mbl .warn{font-style:normal;font-size:10px;color:var(--warn)}
+
+.plans{height:100%;overflow:auto;padding:2px 2px 20px}
+.planhead{
+  padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:#fff;margin-bottom:14px;
+}
+.planhead b{display:block;font-size:14px;letter-spacing:-.01em;margin-bottom:4px}
+.planhead span{font-size:11px;color:var(--muted);line-height:1.6;display:block}
+.plangrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));gap:12px}
+
+.plan{
+  border:1px solid var(--line);border-radius:11px;background:#fff;padding:15px 16px 13px;
+  display:flex;flex-direction:column;gap:9px;transition:.18s;
+}
+.plan:hover{border-color:#cfcfc8;box-shadow:0 4px 18px rgba(0,0,0,.05)}
+.plan header{display:flex;align-items:center;gap:8px}
+.plan .pid{
+  width:20px;height:20px;border-radius:5px;display:grid;place-items:center;flex:none;
+  background:var(--ink);color:#fff;font-family:var(--mono);font-size:10px;font-weight:700;
+}
+.plan h4{font-size:13.5px;font-weight:700;letter-spacing:-.01em;flex:1}
+.plan .ptag{font-family:var(--mono);font-size:9.5px;color:var(--dim);flex:none}
+.plan .pc{font-size:12px;line-height:1.75;color:var(--ink2)}
+.plan .pw,.plan .pm{font-size:11px;line-height:1.7;color:var(--muted)}
+.plan .pw em,.plan .pm em{
+  font-style:normal;display:inline-block;margin-right:6px;padding:1px 5px;border-radius:4px;
+  background:var(--line2);color:var(--ink2);font-size:9.5px;letter-spacing:.04em;
+}
+.plan .pbeats{margin:2px 0 0 14px;font-size:10.5px;color:var(--muted);line-height:1.85}
+.plan .pfoot{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:10px;
+  border-top:1px solid var(--line2)}
+.swatches{display:flex;gap:3px}
+.swatches i{width:13px;height:13px;border-radius:3px;border:1px solid rgba(0,0,0,.06)}
+.plan .go{
+  margin-left:auto;padding:6px 14px;border:0;border-radius:7px;cursor:pointer;font-family:inherit;
+  font-size:11.5px;font-weight:600;background:var(--ink);color:#fff;transition:.16s;
+}
+.plan .go:hover:not(:disabled){background:var(--accent)}
+.plan .go:disabled{opacity:.45;cursor:default}
+
+.pstage{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:12px;height:100%;min-height:280px;text-align:center}
+.pstage p{font-size:13px;font-weight:600}
+.pstage span{font-size:11px;color:var(--dim);font-family:var(--mono)}
+.spin{width:26px;height:26px;border:2px solid var(--line);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ghost{
+  padding:5px 12px;border:1px solid var(--line);border-radius:7px;background:#fff;
+  cursor:pointer;font-family:inherit;font-size:11px;color:var(--ink2);transition:.16s;
+}
+.ghost:hover{border-color:var(--accent);color:var(--accent)}
