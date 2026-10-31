@@ -551,7 +551,13 @@ async function makePlans() {
   $('vidPlan').disabled = true;
   $('vidPlan').textContent = '正在想方案…';
   $('vidHint').textContent = '分析内容特征，给出三套不同的拍法';
-  $('planList').innerHTML = '<p class="ph">生成中…</p>';
+  $('planList').innerHTML = `
+    <div class="tcard"><span class="tstat run"></span><span class="ttitle">分析内容特征</span>
+      <span class="ttool">deepseek</span><span class="ttime"></span>
+      <div class="tdetail"><div>主题 / 受众 / 大纲 / 数据点</div></div></div>
+    <div class="tcard"><span class="tstat run"></span><span class="ttitle">出三套拍法</span>
+      <span class="ttool">deepseek</span><span class="ttime"></span>
+      <div class="tdetail"><div>三套视觉语言不同的方案，各带理由</div></div></div>`;
   $('playerBox').hidden = true;
 
   try {
@@ -580,6 +586,64 @@ async function makePlans() {
   }
 }
 
+/* 关键帧预览：不调任何 API，用方案自己的配色在 150x84 canvas 上
+   画一帧"大概长这样"的示意。方案是抽象文字，预览让它变成一眼能比较的东西。 */
+function drawKeyframe(canvas, p) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const pal = p.palette && p.palette.length ? p.palette : ['#0b0f17', '#22d3ee', '#f8fafc'];
+  const bg = pal[0], accent = pal[1] || '#22d3ee', accent2 = pal[2] || inkOf(bg);
+  function inkOf(hex) {
+    try {
+      const n = parseInt(hex.slice(1), 16);
+      return ((n >> 16 & 255) * 0.299 + (n >> 8 & 255) * 0.587 + (n & 255) * 0.114) > 140 ? '#1a1a1a' : '#f8fafc';
+    } catch { return '#f8fafc'; }
+  }
+  const ink = pal[2] && pal[2].length > 3 ? pal[2] : inkOf(bg);
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  const style = (p.style || 'hud').toLowerCase();
+
+  if (['hud', 'tech', 'pixel', 'geo'].includes(style)) {
+    // 网格底
+    ctx.strokeStyle = 'rgba(128,128,128,.14)'; ctx.lineWidth = 1;
+    for (let x = 12; x < W; x += 14) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = 10; y < H; y += 14) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+    // 三条能力管道 / 数据柱
+    const bars = Math.min(3, Math.max(2, (p.beats || []).length || 3));
+    for (let i = 0; i < bars; i++) {
+      const bx = 18 + i * ((W - 36) / bars), bw = (W - 36) / bars - 8;
+      const bh = 12 + ((i * 7 + p.duration) % 22);
+      ctx.fillStyle = i === 0 ? accent : (i === 1 ? accent2 : 'rgba(128,128,128,.35)');
+      ctx.globalAlpha = 0.85 - i * 0.18;
+      ctx.fillRect(bx, H - 22 - bh, bw, bh);
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(W - 24, 20, 8, 0, Math.PI * 1.4); ctx.stroke();
+  } else if (style === 'line' || style === 'sketch' || style === 'minimal') {
+    // 纸面手绘感：白底 + 手绘线条
+    ctx.strokeStyle = 'rgba(0,0,0,.08)';
+    for (let y = 16; y < H; y += 12) { ctx.beginPath(); ctx.moveTo(10, y); ctx.lineTo(W - 10, y + ((y % 8) - 4) * 0.4); ctx.stroke(); }
+    ctx.strokeStyle = accent; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(14, H - 18);
+    ctx.bezierCurveTo(W * 0.3, H - 40, W * 0.55, H - 8, W - 18, H - 30); ctx.stroke();
+    ctx.beginPath(); ctx.arc(W - 18, H - 30, 3.5, 0, Math.PI * 2); ctx.fillStyle = accent; ctx.fill();
+  } else {
+    // 兜底：几何拼贴
+    ctx.fillStyle = accent; ctx.globalAlpha = 0.85;
+    ctx.fillRect(W * 0.12, H * 0.24, W * 0.3, H * 0.4);
+    ctx.fillStyle = accent2; ctx.globalAlpha = 0.5;
+    ctx.beginPath(); ctx.arc(W * 0.68, H * 0.5, H * 0.26, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // 标题字幕条
+  ctx.fillStyle = ink; ctx.globalAlpha = 0.92;
+  ctx.font = '600 9px system-ui, "PingFang SC", sans-serif';
+  ctx.fillText(String(p.name || '').slice(0, 10), 12, 16);
+  ctx.fillStyle = accent; ctx.fillRect(12, 20, 22, 2);
+  ctx.globalAlpha = 1;
+}
+
 function renderPlans(plans, brief) {
   const head = `
     <div class="planhead">
@@ -594,6 +658,7 @@ function renderPlans(plans, brief) {
         <h4>${esc(p.name)}</h4>
         <span class="ptag">${esc(p.style)} · ${p.duration}s</span>
       </header>
+      <canvas class="kf" width="300" height="84" data-p='${esc(JSON.stringify({style: p.style, palette: p.palette, name: p.name, duration: p.duration, beats: (p.beats||[]).length}))}'></canvas>
       <p class="pc">${esc(p.concept)}</p>
       <p class="pw"><em>为什么</em>${esc(p.why)}</p>
       <p class="pm"><em>运动</em>${esc(p.motion)}</p>
@@ -605,6 +670,9 @@ function renderPlans(plans, brief) {
     </article>`).join('');
 
   $('planList').innerHTML = head + `<div class="plangrid">${cards}</div>`;
+  document.querySelectorAll('.plan canvas.kf').forEach(c => {
+    try { drawKeyframe(c, JSON.parse(c.dataset.p)); } catch { /* 预览失败不影响选择 */ }
+  });
   document.querySelectorAll('.plan .go').forEach(b => {
     b.onclick = () => renderVideo(+b.dataset.i);
   });
@@ -619,10 +687,23 @@ async function renderVideo(idx) {
   document.querySelectorAll('.plan .go').forEach(b => { b.disabled = true; });
   $('planList').hidden = true;
   $('playerBox').hidden = false;
+  const t0 = Date.now();
   $('playerBox').innerHTML = `
-    <div class="pstage"><div class="spin"></div>
-      <p>正在按「${esc(plan.name)}」写动画…</p>
-      <span id="pstageTx">视频模型逐帧代码生成，通常 40-90 秒</span></div>`;
+    <div class="vflow">
+      <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出三套方案</span><span class="ttool">deepseek</span><span class="ttime">✓</span></div>
+      <div class="tcard" id="vStepGen"><span class="tstat run"></span><span class="ttitle">按「${esc(plan.name)}」写动画代码</span>
+        <span class="ttool">${esc(plan.style)}</span><span class="ttime" id="vTimer">0s</span>
+        <div class="tdetail" id="vGenTx"><div>Opus 逐帧代码生成，通常 1-3 分钟</div></div></div>
+      <div class="tcard wait" id="vStepGate"><span class="tstat"></span><span class="ttitle">闸门校验</span>
+        <span class="ttool">4 项检查</span><span class="ttime"></span>
+        <div class="tdetail"><div>完整性 / 能播 / 有字 / 在动</div></div></div>
+    </div>
+    <div class="pstage slim"><div class="spin"></div>
+      <span id="pstageTx">生成中…</span></div>`;
+  window.__vTimer = setInterval(() => {
+    const el = document.getElementById('vTimer');
+    if (el) el.textContent = Math.floor((Date.now() - t0) / 1000) + 's';
+  }, 1000);
   $('vidHint').textContent = '生成中…';
 
   try {
@@ -634,10 +715,21 @@ async function renderVideo(idx) {
           if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
         }
         if (ev.type === 'gate') {
+          clearInterval(window.__vTimer);
+          const gen = document.getElementById('vStepGen');
+          if (gen) { gen.querySelector('.tstat').className = 'tstat ok'; }
+          const gate = document.getElementById('vStepGate');
+          if (gate) {
+            gate.classList.remove('wait');
+            gate.querySelector('.tstat').className = `tstat ${ev.ok ? 'ok' : 'err'}`;
+            gate.querySelector('.ttime').textContent = `第 ${ev.attempts} 版`;
+            const det = gate.querySelector('.tdetail');
+            if (det) det.innerHTML = ev.ok
+              ? `<div>覆盖 ${Math.round((ev.stats.phrase_cover || 0) * 100)}% · 画布文字 ${ev.stats.drawn_han ?? '?'} 字</div>`
+              : `<div>${esc((ev.failures || ['未过'])[0]).slice(0, 60)}</div>`;
+          }
           const tx = document.getElementById('pstageTx');
-          if (tx) tx.textContent = ev.ok
-            ? `闸门通过 · 第 ${ev.attempts} 版 · 覆盖 ${Math.round((ev.stats.phrase_cover || 0) * 100)}%`
-            : `未过闸门：${(ev.failures || [])[0] || ''}`;
+          if (tx) tx.textContent = ev.ok ? '闸门通过，保存成片…' : '未过闸门，保存降级片…';
         }
       },
       '/api/video/render',
@@ -652,6 +744,7 @@ async function renderVideo(idx) {
         <button class="ghost" id="pBack">换一套</button>
       </div>
       <iframe src="${done.url}" title="视频成品"></iframe>`;
+    clearInterval(window.__vTimer);
     document.getElementById('pBack').onclick = () => {
       $('playerBox').hidden = true;
       $('planList').hidden = false;
@@ -659,6 +752,7 @@ async function renderVideo(idx) {
     };
     $('vidHint').textContent = d ? '模型产物没过闸门，已降级模板' : '完成 · 可直接播放';
   } catch (e) {
+    clearInterval(window.__vTimer);
     $('playerBox').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
     $('vidHint').textContent = '失败：' + e.message;
     $('planList').hidden = false;

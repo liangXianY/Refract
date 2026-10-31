@@ -511,3 +511,14 @@ footer{
 
 /* 反思档位：STOP = 轮数用尽（不同于 PASS=达标） */
 .rcard .act.stop{background:#fdf3e7;color:#c98a1e}
+
+/* 方案卡关键帧预览 */
+.plan canvas.kf{width:100%;border-radius:8px;border:1px solid var(--line2);display:block}
+
+/* 视频成片进度时间线 */
+.vflow{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
+.tcard.done{opacity:.75}
+.tcard.wait{opacity:.55}
+.tstat:empty{width:8px;height:8px;border-radius:50%;background:var(--line)}
+.pstage.slim{min-height:120px;gap:10px}
+.pstage.slim span{font-size:12px;color:var(--muted);font-family:var(--mono)}

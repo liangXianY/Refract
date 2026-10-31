@@ -277,6 +277,7 @@ async def generate(
     p = llm.provider("video")
     attempts = 0
     history: list[dict] = []
+    attempt_htmls: list[str] = []
 
     for attempt in range(max_attempts):
         attempts = attempt + 1
