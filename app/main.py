@@ -967,11 +967,15 @@ async def video(payload: VideoIn) -> dict[str, str]:
 
 
 @app.get("/v/{artifact_id}")
-async def video_artifact(artifact_id: str) -> FileResponse:
+async def video_artifact(request: Request, artifact_id: str) -> FileResponse:
     """视频产物。优先返回 bundle 后的在线播放页（build/index.html），
     让用户网页直接看；bundle 不存在则降级回信息页（教怎么本地 studio 预览）。
 
     task_id 或 task_id-a2（某一次被拦下的尝试稿）。
+
+    关键：bundle 的 index.html 里资源是相对路径（./bundle.js），
+    若 URL 没有末尾斜杠，浏览器会把 ./bundle.js 解析成 /v/bundle.js（少一层），
+    导致资源 404、页面空白。所以 bundle 场景下强制 301 到带斜杠的地址。
     """
     import re as _re
 
@@ -981,9 +985,29 @@ async def video_artifact(artifact_id: str) -> FileResponse:
     # 优先：bundle 产物 → 网页直接播放
     build_index = settings.data_dir / "videos" / f"{artifact_id}-remotion" / "build" / "index.html"
     if build_index.exists():
+        if not request.url.path.endswith("/"):
+            from starlette.responses import RedirectResponse
+
+            return RedirectResponse(f"/v/{artifact_id}/", status_code=301)
         return FileResponse(build_index, media_type="text/html; charset=utf-8")
 
     # 降级：信息页（旧行为）
+    path = settings.data_dir / "videos" / f"{artifact_id}.html"
+    if not path.exists():
+        raise HTTPException(404, "video not found")
+    return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
+@app.get("/v/{artifact_id}/")
+async def video_artifact_slash(artifact_id: str) -> FileResponse:
+    """带末尾斜杠的播放页入口（bundle 的 index.html 相对路径需要斜杠才能正确解析资源）。"""
+    import re as _re
+
+    if not _re.fullmatch(r"[a-z0-9]+(-a\d+)?", artifact_id):
+        raise HTTPException(400, "bad id")
+    build_index = settings.data_dir / "videos" / f"{artifact_id}-remotion" / "build" / "index.html"
+    if build_index.exists():
+        return FileResponse(build_index, media_type="text/html; charset=utf-8")
     path = settings.data_dir / "videos" / f"{artifact_id}.html"
     if not path.exists():
         raise HTTPException(404, "video not found")

@@ -4,29 +4,166 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Refract · 内容生产 Agent</title>
+<script>document.documentElement.classList.add('js');</script>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/fontsource/css/inter@latest/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/fontsource/css/space-grotesk@latest/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/fontsource/css/jetbrains-mono@latest/index.css">
 <link rel="stylesheet" href="/web/styles.css"/>
 </head>
-<body>
+<body data-view="landing">
+<script>
+/* 提前定脉络，避免老用户刷新时落地页闪一下（JS 不可用时保持落地页，完整可读） */
+(function(){
+  var q = new URLSearchParams(location.search).get('mode');
+  if ((q && q !== 'demo') || localStorage.getItem('refract_view') === 'workbench') {
+    document.body.dataset.view = 'workbench';
+  }
+})();
+</script>
 
-<nav>
-  <div class="brand">
+<a class="skip" href="#landing" id="skipLink">跳到主要内容</a>
+
+<nav id="nav">
+  <a class="brand" id="brandLink" href="/" aria-label="Refract 首页">
     <div class="logo">R</div>
     <h1>Refract</h1>
     <span>CONTENT AGENT</span>
+  </a>
+
+  <!-- 工作台三板块；演示已上移为落地页 S2 -->
+  <div class="modes" id="modes" role="tablist" aria-label="工作板块">
+    <span class="modes-ind" id="modesInd"></span>
+    <button class="on" data-mode="chat" role="tab" aria-selected="true">会话</button>
+    <button data-mode="article" role="tab" aria-selected="false">文章</button>
+    <button data-mode="video" role="tab" aria-selected="false">视频</button>
   </div>
 
-  <!-- 三个板块，而不是把功能全堆一页 -->
-  <div class="modes" id="modes">
-    <button class="on" data-mode="chat">会话</button>
-    <button data-mode="article">文章</button>
-    <button data-mode="video">视频</button>
-  </div>
-
-  <div class="navlinks">
-    <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener">GitHub</a>
+  <div class="navright">
+    <div class="navlinks">
+      <a href="#demo" data-anchor>演示</a>
+      <a href="#how" data-anchor>流程</a>
+      <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener" data-anchor>GitHub</a>
+      <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener" class="nav-gh">GitHub</a>
+    </div>
     <div class="stat"><span class="dot" id="modeDot"></span><span id="modeText">检测中</span></div>
+    <button class="btn-primary nav-cta" data-go-workbench>开始创作</button>
   </div>
 </nav>
+
+<!-- ==================== 落地页 ==================== -->
+<main id="landing" tabindex="-1">
+
+  <!-- S1 Hero -->
+  <section class="hero" id="hero">
+    <div class="glow g1" data-par="0.06"></div>
+    <div class="glow g2" data-par="-0.04"></div>
+    <div class="dots" data-par="0.03"></div>
+    <div class="wm" data-par="0.05" aria-hidden="true">REFRACT</div>
+    <div class="ticks" aria-hidden="true">
+      <div class="tick-h"></div><div class="tick-v"></div>
+      <span class="coord c1">01 / INPUT</span>
+      <span class="coord c2">02 / REFRACT</span>
+    </div>
+
+    <div class="hero-in">
+      <div class="hero-copy">
+        <span class="eyebrow">Content Agent · 内容生产</span>
+        <h1 class="hero-title">
+          <span class="line"><span class="line-in">一句话进，</span></span>
+          <span class="line"><span class="line-in"><span class="kw">文章</span>与<span class="kw">视频</span>出。</span></span>
+        </h1>
+        <p class="hero-sub">给一个主题、一段文字或一条链接，Refract 自动完成选题拆解、写作、自检与渲染——白光穿过棱镜，色散成你的内容光谱。</p>
+        <div class="hero-cta">
+          <button class="btn-primary" data-go-workbench>开始创作</button>
+          <a class="txt-link" href="#demo">观看演示 ↓</a>
+        </div>
+      </div>
+
+      <div class="hero-card" id="heroCard" role="link" tabindex="0" aria-label="点击观看有声版演示视频">
+        <div class="hero-card-in" data-par="-0.08">
+          <video id="heroVideo" muted autoplay loop playsinline preload="metadata" src="/web/refract-showcase.mp4"></video>
+          <span class="hero-card-tip">点击观看有声版 ↗</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="scroll-cue" aria-hidden="true">SCROLL<i></i></div>
+  </section>
+
+  <!-- S2 演示 -->
+  <section class="sect s2" id="demo">
+    <div class="band">
+      <span class="eyebrow rv">Showcase</span>
+      <h2 class="sect-title rv" style="--d:80ms">产物自己会说话</h2>
+      <p class="sect-sub rv" style="--d:160ms">下面两件产物均由 Refract 全自动生成，未做人工修饰。</p>
+
+      <div class="demo-grid">
+        <div class="dcard rv" style="--d:240ms">
+          <span class="prism-bar"></span>
+          <div class="dcard-head"><span class="badge badge-video">视频</span><span>项目宣传片</span></div>
+          <video class="dcard-video" id="demoVideo" controls preload="metadata" src="/web/refract-showcase.mp4"></video>
+          <p class="dcard-meta">REMOTION / AUTO-RENDERED / 项目完整介绍</p>
+        </div>
+
+        <div class="dcard rv" style="--d:320ms">
+          <div class="dcard-head"><span class="badge badge-article">文章</span><span>BLG 2-0 横扫 HLE 晋级八强</span></div>
+          <iframe class="dcard-article" src="/r/c3180de6070a" title="文章演示" loading="lazy"></iframe>
+          <p class="dcard-meta">WECHAT / ≈3000 字 / PLAN-EXECUTE-REFLECT</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S3 流程 + 数据带 -->
+  <section class="sect" id="how">
+    <div class="band">
+      <span class="eyebrow rv">How it works</span>
+      <h2 class="sect-title rv" style="--d:80ms">三步，从一句话到成品</h2>
+
+      <div class="steps">
+        <div class="step rv">
+          <span class="step-no">01</span>
+          <h3>输入</h3>
+          <p>一句话、一段文字或一条链接，都是原料。</p>
+        </div>
+        <div class="step rv" style="--d:120ms">
+          <span class="step-no prism">02</span>
+          <h3>折射</h3>
+          <p>主 Agent 规划，多 Agent 协作：写作、自检、逐镜头渲染。</p>
+        </div>
+        <div class="step rv" style="--d:240ms">
+          <span class="step-no">03</span>
+          <h3>产物</h3>
+          <p>公众号文章与动画视频，网页直接打开。</p>
+        </div>
+      </div>
+
+      <div class="databand rv" id="databand">
+        <div class="db-item"><span class="db-num" data-count="3">3</span><span class="db-label">类产物</span></div>
+        <div class="db-item"><span class="db-num" data-count="4">4</span><span class="db-label">阶段流水线</span></div>
+        <div class="db-item"><span class="db-num" data-count="33">33</span><span class="db-label">个 API 接口</span></div>
+        <div class="db-item"><span class="db-num" data-count="800">800</span><span class="db-label">秒 · 端到端出片（实测）</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- S4 页脚 CTA -->
+  <section class="sect s4">
+    <div class="band s4-in">
+      <div class="glow s4-glow" aria-hidden="true"></div>
+      <h2 class="sect-title rv">把你的下一篇内容，<br>交给折射。</h2>
+    </div>
+  </section>
+
+  <footer class="lfoot">
+    <span>FastAPI · SSE 流式 · Plan-Execute-Reflect · 多 Agent</span>
+    <span>© 2026 Refract · <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener">GitHub</a></span>
+  </footer>
+</main>
+
+<!-- ==================== 工作台 ==================== -->
+<main id="workbench" hidden tabindex="-1">
 
 <!-- ============ 会话 ============ -->
 <section class="mode-panel on" id="modeChat">
@@ -119,6 +256,7 @@
         <button class="tab on" data-v="doc">正文</button>
         <button class="tab" data-v="reflect">反思记录 <b id="rCount">0</b></button>
         <span class="tab-spacer" id="artDlSlot"></span>
+        <span class="tab-ind" id="artTabInd"></span>
       </div>
       <div class="view on" id="viewDoc">
         <div class="empty" id="artEmpty">
@@ -167,11 +305,11 @@
   </div>
 </section>
 
-
 <footer>
   <span>FastAPI · SSE 流式 · Plan-Execute-Reflect · 多 Agent</span>
   <span id="cost">—</span>
 </footer>
+</main>
 
 <script src="/web/app.js"></script>
 </body>

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -702,13 +703,18 @@ async def bundle_project(project_dir: Path) -> Path | None:
     调用方降级回「信息页」——视频功能不能因为预览构建失败而整体报错。
     """
     import asyncio
+    import logging
     import shutil as _shutil
 
+    log = logging.getLogger(__name__)
+
     if not (project_dir / "package.json").exists():
+        log.warning("[bundle] 缺 package.json：%s", project_dir)
         return None
     node = _shutil.which("node")
     npm = _shutil.which("npm")
     if not node or not npm:
+        log.warning("[bundle] 找不到 node/npm（node=%s npm=%s）", node, npm)
         return None
 
     build = project_dir / "build"
@@ -729,25 +735,43 @@ async def bundle_project(project_dir: Path) -> Path | None:
             )
             _, err = await asyncio.wait_for(proc.communicate(), timeout=600)
             if proc.returncode != 0:
+                log.warning("[bundle] npm install 失败 rc=%s：%s",
+                            proc.returncode, err.decode("utf-8", "ignore")[:800])
                 return None
 
         # 2) bundle（产出 build/）。走 player 入口（干净播放器页），不是 Studio。
         #    cli 的 bin 入口是 remotion-cli.js。
         #    注意：Windows 下 node + 绝对路径 + cwd 会把路径重复拼接（MODULE_NOT_FOUND），
-        #    所以这里传相对路径，靠 cwd 定位
+        #    所以这里传相对路径，靠 cwd 定位。
+        #
+        #    内存：实测 webpack bundle 峰值约 500MB。cgroup 的 MemoryHigh 会给压力，
+        #    所以显式限制 V8 堆（留出余量给非堆开销），别让它无限涨到被 throttle 卡死。
         cli_rel = Path("node_modules") / "@remotion" / "cli" / "remotion-cli.js"
         if not (project_dir / cli_rel).exists():
+            log.warning("[bundle] 缺 remotion-cli.js：%s", project_dir / cli_rel)
             return None
+        env = dict(os.environ)
+        env.setdefault("NODE_OPTIONS", "--max-old-space-size=640")
         proc = await asyncio.create_subprocess_exec(
             node, str(cli_rel), "bundle", "src/player.tsx",
             cwd=str(project_dir),
+            env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
         _, err = await asyncio.wait_for(proc.communicate(), timeout=600)
         if proc.returncode != 0:
+            # 一定要把 stderr 记下来：bundle 失败最常见的两个原因是
+            # cgroup 内存压力（node 被 throttle/杀掉）和入口文件报错，
+            # 丢掉 stderr 就只能靠猜（这个坑踩过一次，排查花了半天）。
+            log.warning("[bundle] remotion bundle 失败 rc=%s：%s",
+                        proc.returncode, err.decode("utf-8", "ignore")[:800])
             return None
-    except (asyncio.TimeoutError, OSError):
+    except asyncio.TimeoutError:
+        log.warning("[bundle] 超时（600s）：%s", project_dir)
+        return None
+    except OSError as exc:
+        log.warning("[bundle] 启动子进程失败：%s", exc)
         return None
 
     if (build / "index.html").exists():

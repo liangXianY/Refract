@@ -27,9 +27,13 @@ RestartSec=3
 # 再被 SIGKILL——部署又慢又粗暴（实测踩过）
 TimeoutStopSec=10
 
-# 内存红线：机器只有 1.9G，应用被 OOM 杀掉好过拖死整机（ssh 也会断）
-MemoryMax=700M
-MemoryHigh=560M
+# 内存红线：机器只有 1.9G，应用被 OOM 杀掉好过拖死整机（ssh 也会断）。
+# 但不能压太死：bundle 视频时 node 子进程实测峰值 500M，加上 Python 主进程
+# 350M 左右，旧值 560M/700M 会让 node 撞 MemoryHigh 被反复 throttle 而失败
+# （memory.events 里 high 计数 1054、bundle 静默返回 None，视频降级成信息页）。
+# 现在放宽到 1G/1.2G：仍留硬限保护整机，又给 bundle 留够空间。
+MemoryMax=1200M
+MemoryHigh=1000M
 
 # 基础加固
 NoNewPrivileges=true

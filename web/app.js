@@ -124,17 +124,228 @@ let currentAbort = null;  // 当前对话任务的中止函数（暂停用）
 
 const MODES = ['chat', 'article', 'video'];
 
-function switchMode(mode) {
-  MODES.forEach(m => {
-    $(`mode${m[0].toUpperCase()}${m.slice(1)}`).classList.toggle('on', m === mode);
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const mqMobile = matchMedia('(max-width: 900px)');
+
+let currentMode = 'chat';
+let modeLock = false;
+
+function modeEl(m) { return $(`mode${m[0].toUpperCase()}${m.slice(1)}`); }
+
+function updateModesInd() {
+  const ind = $('modesInd');
+  const btn = document.querySelector(`#modes button[data-mode="${currentMode}"]`);
+  if (!ind || !btn) return;
+  ind.style.width = btn.offsetWidth + 'px';
+  ind.style.transform = `translateX(${btn.offsetLeft}px)`;
+}
+
+function switchMode(mode, instant = false) {
+  if (!MODES.includes(mode)) return;
+  document.querySelectorAll('#modes button').forEach(b => {
+    b.classList.toggle('on', b.dataset.mode === mode);
+    b.setAttribute('aria-selected', b.dataset.mode === mode ? 'true' : 'false');
   });
-  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
-  if (mode === 'chat') setTimeout(() => $('chatInput').focus(), 60);
+  if (mode === currentMode) { updateModesInd(); return; }
+  if (modeLock && !instant) return;
+  const from = modeEl(currentMode), to = modeEl(mode);
+  currentMode = mode;
+  updateModesInd();
+  if (instant || REDUCED) {
+    MODES.forEach(m => modeEl(m).classList.toggle('on', m === mode));
+    if (mode === 'chat') setTimeout(() => $('chatInput').focus({ preventScroll: true }), 60);
+    return;
+  }
+  modeLock = true;
+  from.classList.add('leaving');
+  setTimeout(() => {
+    from.classList.remove('on', 'leaving');
+    to.classList.add('on', 'enter');
+    setTimeout(() => to.classList.remove('enter'), 220);
+    if (mode === 'chat') $('chatInput').focus({ preventScroll: true });
+  }, 120);
+  setTimeout(() => { modeLock = false; }, 220);
 }
 
 document.querySelectorAll('#modes button').forEach(btn => {
-  btn.onclick = () => switchMode(btn.dataset.mode);
+  btn.onclick = () => {
+    if (document.body.dataset.view === 'workbench') switchMode(btn.dataset.mode);
+    else goWorkbench(btn.dataset.mode);
+  };
 });
+addEventListener('resize', updateModesInd);
+
+/* ==================== 落地页 ↔ 工作台（视图与转场） ==================== */
+
+let transitioning = false;
+let landingScrollY = 0;
+
+function applyView(view) {
+  document.body.dataset.view = view;
+  $('landing').hidden = view !== 'landing';
+  $('workbench').hidden = view !== 'workbench';
+  localStorage.setItem('refract_view', view);
+}
+
+function enterWorkbench(mode) {
+  applyView('workbench');
+  document.body.classList.remove('boot-landing', 'tr-in');
+  switchMode(mode, true);
+  updateModesInd();
+  const wb = $('workbench');
+  if (!REDUCED) {
+    wb.classList.add('wb-enter');
+    setTimeout(() => wb.classList.remove('wb-enter'), 640);
+  }
+  if (mode === 'chat') setTimeout(() => $('chatInput').focus({ preventScroll: true }), 80);
+}
+
+function goWorkbench(mode = 'chat', instant = false) {
+  if (transitioning) return;
+  const wasWorkbench = document.body.dataset.view === 'workbench';
+  // 内联脚本可能已把 data-view 预置为 workbench（防闪烁），
+  // 此时 #workbench 仍带 hidden，必须先补一次 applyView 否则两个 main 都不显示
+  applyView('workbench');
+  if (wasWorkbench) { switchMode(mode); return; }
+  landingScrollY = scrollY;
+  if (instant || REDUCED) { enterWorkbench(mode); return; }
+  transitioning = true;
+  document.body.classList.add('tr-out');
+  setTimeout(() => {
+    document.body.classList.remove('tr-out');
+    enterWorkbench(mode);
+    transitioning = false;
+  }, 240);
+}
+
+function goLanding(instant = false) {
+  if (transitioning) return;
+  if (document.body.dataset.view === 'landing') { scrollTo({ top: 0, behavior: REDUCED ? 'auto' : 'smooth' }); return; }
+  const done = () => {
+    applyView('landing');
+    document.body.classList.remove('boot-landing');  // 返回时不重播首屏编排
+    $('hero').classList.add('is-in');
+    if (!instant && !REDUCED) {
+      document.body.classList.add('tr-in');
+      setTimeout(() => document.body.classList.remove('tr-in'), 320);
+    }
+    scrollTo(0, landingScrollY);
+    requestParallax();
+  };
+  if (instant || REDUCED) { done(); return; }
+  transitioning = true;
+  document.body.classList.add('tr-out-wb');
+  setTimeout(() => {
+    document.body.classList.remove('tr-out-wb');
+    done();
+    transitioning = false;
+  }, 200);
+}
+
+document.querySelectorAll('[data-go-workbench]').forEach(b => {
+  b.onclick = () => goWorkbench('chat');
+});
+$('brandLink').onclick = (e) => { e.preventDefault(); goLanding(); };
+addEventListener('keydown', (e) => {
+  if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); goLanding(); }
+});
+$('skipLink').onclick = (e) => {
+  e.preventDefault();
+  const main = document.body.dataset.view === 'workbench' ? $('workbench') : $('landing');
+  main.focus({ preventScroll: false });
+};
+
+/* ==================== 动效模块（与业务解耦） ==================== */
+
+/* reveal：入视口 20% 渐显一次；IO 异常则全部直显，绝不藏内容 */
+try {
+  const io = new IntersectionObserver((es) => es.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add('rv-in'); io.unobserve(e.target); }
+  }), { threshold: 0.2, rootMargin: '0px 0px -8% 0px' });
+  document.querySelectorAll('.rv').forEach(el => io.observe(el));
+} catch {
+  document.querySelectorAll('.rv').forEach(el => el.classList.add('rv-in'));
+}
+
+/* 视差：光斑 / 点阵 / 描边字 / 视频卡，共用一个 rAF，只写 transform 变量 */
+const parEls = [...document.querySelectorAll('[data-par]')];
+let parQueued = false;
+
+function requestParallax() {
+  if (parQueued) return;
+  parQueued = true;
+  requestAnimationFrame(() => {
+    parQueued = false;
+    if (document.hidden || document.body.dataset.view !== 'landing') return;
+    const y = scrollY;
+    if (!REDUCED && !mqMobile.matches) {
+      parEls.forEach(el => el.style.setProperty('--py', (y * +el.dataset.par).toFixed(1) + 'px'));
+    }
+    $('nav').classList.toggle('is-stuck', y > 40);
+    $('hero').classList.toggle('scrolled', y > 80);
+  });
+}
+addEventListener('scroll', requestParallax, { passive: true });
+mqMobile.addEventListener?.('change', () => {
+  if (mqMobile.matches) parEls.forEach(el => el.style.setProperty('--py', '0px'));
+  requestParallax();
+});
+requestParallax();
+
+/* 数字滚动：入视口一次，easeOutCubic，计数中 accent-ink 色 */
+try {
+  const nums = [...document.querySelectorAll('.db-num[data-count]')];
+  const dio = new IntersectionObserver((es) => es.forEach(e => {
+    if (!e.isIntersecting) return;
+    dio.unobserve(e.target);
+    nums.forEach(el => {
+      const to = +el.dataset.count;
+      if (REDUCED) { el.textContent = to; return; }
+      el.classList.add('counting');
+      const t0 = performance.now(), dur = 1200;
+      (function tick(t) {
+        const p = Math.min((t - t0) / dur, 1);
+        el.textContent = Math.round(to * (1 - Math.pow(1 - p, 3)));
+        if (p < 1) requestAnimationFrame(tick);
+        else setTimeout(() => el.classList.remove('counting'), 300);
+      })(t0);
+    });
+  }), { threshold: 0.4 });
+  if ($('databand')) dio.observe($('databand'));
+} catch { /* 数字本来就写着终值，无需降级 */ }
+
+/* hero 视频：静音自动播，离屏暂停，被拦截则静默 */
+const heroVideo = $('heroVideo');
+if (heroVideo) {
+  heroVideo.muted = true;
+  heroVideo.play?.().catch(() => {});
+  try {
+    new IntersectionObserver((es) => es.forEach(e => {
+      if (e.isIntersecting) { if (!REDUCED) heroVideo.play().catch(() => {}); }
+      else heroVideo.pause();
+    }), { threshold: 0.1 }).observe(heroVideo);
+  } catch { /* 忽略 */ }
+  if (REDUCED) { heroVideo.removeAttribute('autoplay'); heroVideo.pause(); }
+}
+function watchDemo() {
+  document.getElementById('demo').scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth' });
+  const v = $('demoVideo');
+  if (v) { v.muted = false; v.play().catch(() => {}); }
+}
+$('heroCard').onclick = watchDemo;
+$('heroCard').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); watchDemo(); }
+});
+
+/* 文章 tab 下划线滑动 */
+function updateArtTabInd() {
+  const ind = $('artTabInd');
+  const tab = document.querySelector('#modeArticle .tab.on');
+  if (!ind || !tab) return;
+  ind.style.width = tab.offsetWidth + 'px';
+  ind.style.transform = `translateX(${tab.offsetLeft}px)`;
+}
+addEventListener('resize', updateArtTabInd);
 
 /* ============================ 会话 ============================ */
 
@@ -379,15 +590,15 @@ $('chatSend').onclick = () => {
   }
 };
 
-// 刷新时按 session_id 拉历史，逐轮重放
+// 刷新时按 session_id 拉历史，逐轮重放；返回是否有非空历史（决定直达工作台还是先看落地页）
 async function loadHistory() {
   const sid = localStorage.getItem('refract_sid');
-  if (!sid) return;
+  if (!sid) return false;
   try {
     const r = await fetch(`/api/session/${sid}`);
-    if (!r.ok) return;
+    if (!r.ok) return false;
     const { messages } = await r.json();
-    if (!messages || !messages.length) return;
+    if (!messages || !messages.length) return false;
     for (const m of messages) {
       if (m.role === 'user') {
         addMsg('user', esc(m.text).replace(/\n/g, '<br/>'));
@@ -397,7 +608,8 @@ async function loadHistory() {
         turn.finish();
       }
     }
-  } catch { /* 拉不到历史就算了，不阻塞 */ }
+    return true;
+  } catch { return false; /* 拉不到历史就算了，不阻塞 */ }
 }
 
 function autosize(el) {
@@ -435,6 +647,7 @@ document.querySelectorAll('#modeArticle .tab').forEach(tab => {
     tab.classList.add('on');
     document.querySelectorAll('#modeArticle .view').forEach(v => v.classList.remove('on'));
     $('view' + tab.dataset.v.charAt(0).toUpperCase() + tab.dataset.v.slice(1)).classList.add('on');
+    updateArtTabInd();
   };
 });
 
@@ -723,7 +936,10 @@ async function genVideo() {
           if (gate) {
             gate.classList.remove('wait');
             gate.querySelector('.tstat').className = `tstat ${ev.ok ? 'ok' : 'err'}`;
-            gate.querySelector('.ttime').textContent = `第 ${ev.attempts} 版`;
+            // ev.attempts 是逐镜头尝试明细（list[dict]），不是「第几版」——
+            // 直接插值会变成 [object Object]，改成统计回炉了几个镜头
+            const retries = (ev.attempts || []).filter(a => (a.attempt || 1) > 1).length;
+            gate.querySelector('.ttime').textContent = retries ? `回炉 ${retries} 次` : '一次通过';
             const det = gate.querySelector('.tdetail');
             if (det) det.innerHTML = ev.ok
               ? `<div>${ev.stats?.shots ?? '?'} 个镜头 · ${(ev.stats?.duration_s ?? 0).toFixed(1)}s${ev.stats?.fallbacks ? ` · ${ev.stats.fallbacks} 镜头落模板` : ''}</div>`
@@ -950,7 +1166,10 @@ async function renderVideo(idx) {
           if (gate) {
             gate.classList.remove('wait');
             gate.querySelector('.tstat').className = `tstat ${ev.ok ? 'ok' : 'err'}`;
-            gate.querySelector('.ttime').textContent = `第 ${ev.attempts} 版`;
+            // ev.attempts 是逐镜头尝试明细（list[dict]），不是「第几版」——
+            // 直接插值会变成 [object Object]，改成统计回炉了几个镜头
+            const retries = (ev.attempts || []).filter(a => (a.attempt || 1) > 1).length;
+            gate.querySelector('.ttime').textContent = retries ? `回炉 ${retries} 次` : '一次通过';
             const det = gate.querySelector('.tdetail');
             if (det) det.innerHTML = ev.ok
               ? `<div>${ev.stats?.shots ?? '?'} 个镜头 · ${(ev.stats?.duration_s ?? 0).toFixed(1)}s${ev.stats?.fallbacks ? ` · ${ev.stats.fallbacks} 镜头落模板` : ''}</div>`
@@ -1006,14 +1225,39 @@ $('vidInput').addEventListener('keydown', (e) => {
   } catch { $('modeText').textContent = '离线'; }
 
   const QS = new URLSearchParams(location.search);
+  const qm = QS.get('mode');
+
+  function initLanding(withBoot) {
+    applyView('landing');
+    if (withBoot && !REDUCED) {
+      document.body.classList.add('boot-landing');
+      requestAnimationFrame(() => requestAnimationFrame(() => $('hero').classList.add('is-in')));
+    } else {
+      $('hero').classList.add('is-in');
+    }
+    requestParallax();
+  }
 
   // ?demo=1 自动跑一篇文章，用于截图自检
   if (QS.get('demo') === '1') {
-    switchMode('article');
+    goWorkbench('article', true);
     $('artInput').value = '从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构';
     setTimeout(genArticle, 500);
+  } else if (qm === 'demo') {
+    // 旧 ?mode=demo 深链：落到落地页演示区，而不是 404
+    initLanding(false);
+    setTimeout(() => document.getElementById('demo').scrollIntoView(), 60);
+  } else if (MODES.includes(qm)) {
+    // ?mode=chat|article|video 深链直进工作台，不播转场
+    goWorkbench(qm, true);
+  } else {
+    const hasHistory = await loadHistory();  // 同一 IP 刷新后恢复历史对话
+    if (hasHistory || localStorage.getItem('refract_view') === 'workbench') goWorkbench('chat', true);
+    else initLanding(true);
   }
-  if (QS.has('mode')) switchMode(QS.get('mode'));
   loadModels();
-  loadHistory();  // 同一 IP 刷新后恢复历史对话
+  updateModesInd();
+  updateArtTabInd();
+  // 字体加载完成后胶囊/tab 指示条宽度可能变化，重算一次
+  if (document.fonts?.ready) document.fonts.ready.then(() => { updateModesInd(); updateArtTabInd(); });
 })();
