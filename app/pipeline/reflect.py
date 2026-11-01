@@ -131,7 +131,7 @@ async def reflect(
                 f"目标平台 {brief.platform}，语气 {brief.tone}，目标篇幅 {brief.word_limit} 字。"
                 f"{history_hint}\n\n以下是待审稿件：\n<<<\n{body[:12000]}\n>>>"
             ),
-            max_tokens=4000,
+            max_tokens=6000,  # 推理模型的思考 token 共用额度
         )
     except Exception as exc:
         # 反思是「非关键路径」。它挂了，不能让已经写好的一整篇稿子作废——

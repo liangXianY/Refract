@@ -350,7 +350,9 @@ def save_video(
     out_dir = data_dir / "videos"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{artifact_id}.html"
-    path.write_text(render_video(brief, body, style_id, meta_line), encoding="utf-8")
+    from .textutil import clean_text
+
+    path.write_text(clean_text(render_video(brief, body, style_id, meta_line)), encoding="utf-8")
     return path
 
 

@@ -67,12 +67,12 @@ def main() -> int:
         page = c.get(url)
         page.raise_for_status()
         html = page.text
+        # /api/generate 是文章接口，产物页是文章渲染页（视频页才有 scene/const DATA）
         checks = {
             "长度 > 3000": len(html) > 3000,
-            "含场景容器": 'class="scene' in html or "scene" in html,
-            "内嵌数据": "const DATA =" in html,
+            "含正文结构": "<h2>" in html or "<h3>" in html or "<p>" in html,
             "无未替换占位符": "__DATA__" not in html and "__TITLE__" not in html,
-            "含正文渲染": "<h3>" in html or "<p>" in html,
+            "无占位图残留": "](prompt:" not in html,
         }
         print("\n[artifact] " + url)
         for k, v in checks.items():

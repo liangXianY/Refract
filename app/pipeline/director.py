@@ -32,12 +32,17 @@ SYSTEM = """你是 Motion Graphics 导演，为一个「内容生产 Agent」的
 
 硬要求：
 1. 三套方案的视觉语言必须真的不同（信息密度、节奏、色彩、构图各走一路），
-   不能是同一个东西换配色。
+   不能是同一个东西换配色。具体来说：
+   - 三套里至少一套是「非深色底」——深底科技风最容易撞，主动避开它做一套
+   - 三套的构图逻辑要不同（满屏数据 vs 极简大字 vs 具象场景），别都居中大字
+   - 如果用了 custom，必须从某个具体领域借视觉隐喻（水墨/乐谱/地图/建筑平面/
+     化学实验/电路板/盲文……），concept 里点明这个隐喻来源，不许写成泛泛的"原创科技感"
 2. concept 写画面，不写文案。用「屏幕上发生什么」描述，不许写「讲述/介绍/展示」。
 3. why 必须引用这篇内容的具体特征（题材、信息密度、是否有数据、受众），
    不许写「视觉冲击力强」这类套话。
 4. motion 说清楚运动靠什么驱动：元素入场方式、持续运动、转场手法。
-5. duration 控制在 18-30 秒。
+5. duration 控制在 24-36 秒——宁可长一点把字读完，也不要赶节奏让人没看完就切。
+   每个 beats 段落至少 5 秒，一句话配一个镜头，不要 3 秒就切。
 6. style 只能从给定的风格库里选，或者填 custom（表示要单独定视觉）。
 
 只输出 JSON：
@@ -49,8 +54,8 @@ SYSTEM = """你是 Motion Graphics 导演，为一个「内容生产 Agent」的
       "style": "风格库 key 或 custom",
       "concept": "一句话说清屏幕上发生什么（40-70 字）",
       "why": "为什么适合这篇内容（30-60 字，必须引用内容特征）",
-      "duration": 22,
-      "beats": ["0-3s 开场钩子写什么", "3-9s 主体一", "9-16s 主体二", "16-22s 收尾"],
+      "duration": 28,
+      "beats": ["0-5s 开场钩子写什么", "5-14s 主体一", "14-22s 主体二", "22-28s 收尾"],
       "palette": ["#0b0f17", "#22d3ee", "#f8fafc"],
       "motion": "运动语言（30-50 字）"
     }
@@ -198,7 +203,7 @@ async def recommend_plans(
             f"可选风格库：\n{_style_menu()}\n\n"
             f"给 {top_k} 套方案。{avoid}"
         ),
-        max_tokens=2200,
+        max_tokens=6000,  # deepseek-flash 是推理模型，思考 token 和正文共用额度，2200 会被思考吃光截断
         temperature=0.8,
         validate=_validate,
         route="text",
@@ -216,7 +221,7 @@ async def recommend_plans(
                 style=style,
                 concept=str(raw.get("concept") or "")[:200],
                 why=str(raw.get("why") or "")[:200],
-                duration=max(12, min(40, int(raw.get("duration") or 22))),
+                duration=max(24, min(40, int(raw.get("duration") or 28))),
                 beats=[str(b)[:120] for b in (raw.get("beats") or [])][:6],
                 palette=[str(c) for c in (raw.get("palette") or [])][:4],
                 motion=str(raw.get("motion") or "")[:200],
@@ -250,7 +255,7 @@ async def _opus_custom_plan(llm: LLMClient, brief: ContentBrief, body: str) -> V
         data = await llm.structured(
             system=_OPUS_CUSTOM_SYSTEM,
             user=f"内容摘要：\n{_content_digest(brief, body)}",
-            max_tokens=1200,
+            max_tokens=3000,
             temperature=0.9,
             route="video",  # 视觉原创就是 Opus 的活，这里花它的钱才花在刀刃上
         )
@@ -263,7 +268,7 @@ async def _opus_custom_plan(llm: LLMClient, brief: ContentBrief, body: str) -> V
             style="custom",
             concept=str(raw.get("concept") or "")[:200],
             why=str(raw.get("why") or "由 Opus 完全原创的视觉语言，风格库之外的第四种可能")[:200],
-            duration=max(12, min(40, int(raw.get("duration") or 22))),
+            duration=max(24, min(40, int(raw.get("duration") or 28))),
             beats=[str(b)[:120] for b in (raw.get("beats") or [])][:6],
             palette=[str(c) for c in (raw.get("palette") or [])][:4],
             motion=str(raw.get("motion") or "")[:200],

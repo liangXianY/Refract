@@ -86,7 +86,7 @@ async def plan(
     raw = await llm.structured(
         system=SYSTEM,
         user=_user_prompt(user_input, platform, word_limit, tone),
-        max_tokens=4000,
+        max_tokens=6000,  # 推理模型的思考 token 共用额度
         validate=_validate,
     )
     raw.setdefault("platform", platform)

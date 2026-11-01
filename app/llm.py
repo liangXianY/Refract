@@ -257,18 +257,11 @@ class LLMClient:
             text, stop = await self._anthropic_collect(p, system, user, max_tokens, temperature)
             return strip_fence(text), p
 
-        payload = {
-            "model": p.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        resp = await self._post(p, self._v1(p, "/chat/completions"), payload)
-        choice = (resp.json().get("choices") or [{}])[0]
-        return strip_fence((choice.get("message") or {}).get("content") or ""), p
+        # OpenAI 协议（原生 DeepSeek）同样走流式收集：
+        # deepseek-flash 是推理模型，非流式长请求（几千行 HTML）同样会被网关掐，
+        # 且 reasoning token 和正文共用额度，必须在流式里把正文攒完整。
+        text, stop = await self._openai_collect(p, system, user, max_tokens, temperature)
+        return strip_fence(text), p
 
     # ---------------------------------------------------------------- 流式
 
@@ -334,6 +327,50 @@ class LLMClient:
                 elif kind == "message_delta":
                     d = obj.get("delta") or {}
                     stop = d.get("stop_reason") or stop
+        return "".join(parts), stop
+
+    async def _openai_collect(
+        self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
+    ) -> tuple[str, str]:
+        """流式发起、收集成完整文本（OpenAI 协议，原生 DeepSeek 用）。
+
+        和 _anthropic_collect 同款哲学：流式 = 一直有数据 = 网关不掐长请求。
+        deepseek-flash 是推理模型，reasoning 单独走 reasoning_content 字段，
+        正文走 content；这里只攒正文，reasoning 忽略（成片代码只要结果）。
+        """
+        payload = {
+            "model": p.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": True,
+            "temperature": temperature,
+            "max_tokens": min(max_tokens, p.max_tokens),
+        }
+        client = self._client(p)
+        parts: list[str] = []
+        stop = ""
+        async with client.stream("POST", self._v1(p, "/chat/completions"), json=payload) as resp:
+            if resp.status_code >= 400:
+                body = (await resp.aread()).decode()[:300]
+                raise LLMError(f"[{p.label}] HTTP {resp.status_code}: {_clean_error(body)}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if not chunk or chunk == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                choice = (obj.get("choices") or [{}])[0]
+                delta = choice.get("delta") or {}
+                if text := delta.get("content"):
+                    parts.append(text)
+                if fr := choice.get("finish_reason"):
+                    stop = fr
         return "".join(parts), stop
 
     async def _stream_openai(

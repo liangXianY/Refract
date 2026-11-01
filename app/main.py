@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from datetime import datetime
@@ -37,6 +38,32 @@ llm = LLMClient(settings, registry)
 from .pipeline.memory import init_memory, get_memory  # noqa: E402
 
 memory = init_memory(settings.data_dir / "memory.db")
+
+# 基于 IP 的配额 + 访问记录
+from .quota import QuotaStore, derive_session_id, get_quota  # noqa: E402
+
+quota = get_quota(settings.data_dir)
+
+
+def client_ip(request: Request) -> str:
+    """取客户端真实 IP。直连用 client.host；经反代时读 X-Forwarded-For 首跳。"""
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    x_real = request.headers.get("x-real-ip")
+    if x_real:
+        return x_real.strip()
+    return request.client.host if request.client else "unknown"
+
+
+def require_admin(request: Request) -> None:
+    """管理员密码校验。密码配在 .env 的 ADMIN_PASSWORD，没配则管理员功能关闭。"""
+    pwd = os.environ.get("ADMIN_PASSWORD", "")
+    if not pwd:
+        raise HTTPException(403, "未配置管理员密码（ADMIN_PASSWORD），后台未开启")
+    auth = request.headers.get("x-admin-key", "")
+    if auth != pwd:
+        raise HTTPException(401, "管理员口令错误")
 
 
 class GenerateIn(BaseModel):
@@ -206,6 +233,21 @@ async def github_trending(days: int = 7, limit: int = 8, mode: str = "new", page
     return data
 
 
+@app.get("/api/hot/{source}")
+async def platform_hot(source: str, limit: int = 10) -> dict[str, Any]:
+    """平台实时热榜：小红书 / 微博 / 知乎 / 抖音 / B站 / 百度（60s API）。
+
+    热榜是灵感素材不是关键路径：接口挂了返回 502 + 说明，前端降级为提示。
+    """
+    from .pipeline.hotlist import HotListError, fetch_hot
+
+    try:
+        hl = await fetch_hot(source, limit=limit)
+    except HotListError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"source": hl.source, "label": hl.source_label, "items": hl.items}
+
+
 @app.get("/api/articles/{task_id}/md")
 async def article_markdown(task_id: str) -> Any:
     """文章的 Markdown 原文，带下载头。产物页是给眼睛看的，发平台要的是 md。
@@ -278,15 +320,21 @@ async def memory_structures() -> dict[str, Any]:
 
 
 @app.post("/api/generate")
-async def generate(payload: GenerateIn) -> dict[str, str]:
+async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
     if not settings.is_ready:
         raise HTTPException(400, "未配置 DEEPSEEK_API_KEY，且未开启 LLM_MOCK")
     if not payload.input.strip() and not payload.url.strip():
         raise HTTPException(400, "input 和 url 至少给一个")
 
+    ip = client_ip(request)
+    ok, reason = quota.can(ip, "article")
+    if not ok:
+        raise HTTPException(429, reason)
+
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
+    quota.consume(ip, "article", f"/r/{task_id}")
     asyncio.create_task(
         _run(task, payload.input, payload.url, payload.platform, payload.words, payload.style)
     )
@@ -298,27 +346,39 @@ async def generate(payload: GenerateIn) -> dict[str, str]:
 
 class ChatIn(BaseModel):
     input: str = Field(min_length=1, max_length=4000)
+    session_id: str = Field(default="", max_length=64)
 
 
 @app.post("/api/chat")
-async def chat(payload: ChatIn) -> dict[str, str]:
+async def chat(payload: ChatIn, request: Request) -> dict[str, str]:
     """对话入口：主 Agent 接管。
 
     和 /api/generate 的分工：那边是显式板块（用户已选好「文章/视频」），
     这边用户只说话，做什么由 Supervisor 规划——包括「什么都不做，回一句话」。
+
+    配额：按客户端 IP 记一次「对话」；session_id 由 IP 派生，自动开启跨轮上下文。
     """
     if not settings.is_ready:
         raise HTTPException(400, "未配置 DEEPSEEK_API_KEY，且未开启 LLM_MOCK")
 
+    ip = client_ip(request)
+    ok, reason = quota.can(ip, "chat")
+    if not ok:
+        raise HTTPException(429, reason)
+
+    # session_id 由 IP 派生：同一 IP 自动同一会话，跨轮上下文 + 配额都挂在这上面
+    sid = payload.session_id or derive_session_id(ip)
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    asyncio.create_task(_run_chat(task, task_id, payload.input))
-    return {"task_id": task_id}
+    quota.consume(ip, "chat", task_id)  # artifact=task_id，流水表可反查这一轮对话
+    asyncio.create_task(_run_chat(task, task_id, payload.input, sid, ip))
+    return {"task_id": task_id, "session_id": sid}
 
 
-async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
+async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = "", ip: str = "") -> None:
     from .agents.memory_keeper import MemoryKeeper
+    from .agents.session_context import session_memory
     from .agents.supervisor import handle_chat
     from .pipeline import runs
     from .pipeline.renderer import save_article
@@ -335,8 +395,75 @@ async def _run_chat(task: TaskState, task_id: str, text: str) -> None:
     }
     try:
         keeper = MemoryKeeper(memory)
-        result = await handle_chat(task_id=task_id, text=text, llm=llm, keeper=keeper, emit=task.push)
+        context = session_memory.context(session_id) if session_id else ""
+
+        # 事件既推给 SSE，又写进会话历史（刷新可恢复）
+        from .session_history import get_history
+
+        history = get_history() if session_id else None
+        if history:
+            history.start_turn(session_id, text, task_id)
+
+        async def emit(ev: dict) -> None:
+            await task.push(ev)
+            if history:
+                history.append_event(session_id, ev)
+
+        result = await handle_chat(
+            task_id=task_id, text=text, llm=llm, keeper=keeper, emit=emit,
+            session_id=session_id, context=context, ip=ip,
+        )
         record.update({k: v for k, v in result.items() if k != "results"})
+
+        # 写入会话上下文：本轮用户问了什么 + 助手干了什么，供下一轮引用
+        if session_id:
+            session_memory.push(session_id, "user", text[:200])
+            results_now = result.get("results") or []
+            if results_now:
+                # 摘要带上前一轮工具的实际产出，尤其热榜的具体条目——
+                # 否则用户追问「第一条是什么」，planner 不知道是啥，只能重拉热榜
+                parts = []
+                for r in results_now:
+                    s = r.get("summary", "")
+                    if r.get("tool") == "hot_topics" and r.get("items"):
+                        titles = "；".join(
+                            f"{it.get('rank')}.{it.get('title','')}" for it in r["items"][:10]
+                        )
+                        s = f"{s}：{titles}"
+                    if s:
+                        parts.append(s)
+                summ = "；".join(parts)[:600]
+            else:
+                summ = result.get("reply", "")[:200]
+            session_memory.push(session_id, "assistant", summ)
+
+            # 滚动窗口：超过最近 5 轮（10 条消息）的旧消息，交给模型压缩成摘要，
+            # 而不是直接丢弃——里面可能藏着用户的偏好或指代对象
+            overflow = session_memory.overflow(session_id)
+            if overflow:
+                old_lines = "\n".join(
+                    f"{'用户' if t.role == 'user' else '助手'}：{t.summary}" for t in overflow
+                )
+                prev_summary = session_memory.get_summary(session_id)
+                try:
+                    summ_text, _ = await llm.complete(
+                        system=(
+                            "你是对话记忆压缩器。把多轮对话浓缩成一段 200 字内的摘要，"
+                            "保留：用户的核心意图、关键事实/结论、可能被后续指代的实体（人名/项目/话题）。"
+                            "丢弃寒暄和过程细节。直接输出摘要文本，不要解释。"
+                        ),
+                        user=(
+                            f"已有摘要：\n{prev_summary or '（无）'}\n\n"
+                            f"新增对话：\n{old_lines}\n\n请合并成一段摘要："
+                        ),
+                        max_tokens=400,
+                        temperature=0.3,
+                        route="text",
+                    )
+                    session_memory.set_summary(session_id, summ_text)
+                except Exception:
+                    # 摘要失败不致命：保留溢出前的状态即可，下次再试
+                    pass
 
         # 对话里写出的文章：补产物页 + 留痕。视频/热点类没有文件产物。
         results = result.get("results") or []
@@ -505,6 +632,10 @@ async def _run(
 def _sse(ev: dict[str, Any]) -> str:
     # id 带 seq：浏览器断线重连时自动带 Last-Event-ID，
     # 服务端从下一条续传，而不是从头回放——「你好」刷屏的根源就在回放
+    # 心跳 ping 不带 id 字段：SSE 规范里没有 id 的事件不会更新 Last-Event-ID，
+    # 否则 ping 的 id 会把客户端记住的进度倒退成 0，重连时重复回放
+    if ev.get("type") == "ping":
+        return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
     return f"id: {ev.get('seq', 0)}\ndata: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
 
@@ -569,15 +700,18 @@ async def task_detail(task_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/runs")
-async def list_runs(limit: int = 30) -> dict[str, Any]:
-    """生成记录列表（新的在前）。复盘入口：哪次用哪个模型、过没过闸、花多久。"""
+async def list_runs(request: Request, limit: int = 30) -> dict[str, Any]:
+    """生成记录列表（新的在前）。复盘入口：哪次用哪个模型、过没过闸、花多久。
+    仅管理员可见——普通用户不应看到所有人的生成记录。"""
+    require_admin(request)
     from .pipeline import runs
 
     return {"runs": runs.list_runs(settings.data_dir, limit=min(limit, 100))}
 
 
 @app.get("/api/runs/{task_id}")
-async def get_run(task_id: str) -> dict[str, Any]:
+async def get_run(request: Request, task_id: str) -> dict[str, Any]:
+    require_admin(request)
     from .pipeline import runs
 
     r = runs.get(settings.data_dir, task_id)
@@ -616,7 +750,7 @@ async def video_plans(payload: PlansIn) -> dict[str, Any]:
 
     brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
     ps = await recommend_plans(llm, brief, last_style=memory.get("last_video_style") or "",
-                               opus_custom=not settings.mock)
+                               opus_custom=not settings.mock)  # 第 4 套 custom 由 Opus 设计；mock/本地无凭据则缺席
     return {
         "brief": brief.model_dump(),
         "plans": [p.model_dump() for p in ps.plans],
@@ -627,8 +761,8 @@ async def video_plans(payload: PlansIn) -> dict[str, Any]:
 
 
 @app.post("/api/video/render")
-async def video_render(payload: RenderIn) -> dict[str, str]:
-    """第二步：按选定方案让视频模型写整份动画 HTML，过闸门后出片。"""
+async def video_render(payload: RenderIn, request: Request) -> dict[str, str]:
+    """第二步：按选定方案走 Remotion 管线出片（video-shotcraft 式：选卡→逐镜头→工程拼装）。"""
     from .pipeline.director import VideoPlan
 
     try:
@@ -636,9 +770,15 @@ async def video_render(payload: RenderIn) -> dict[str, str]:
     except Exception as exc:
         raise HTTPException(400, f"方案格式不对：{exc}") from exc
 
+    ip = client_ip(request)
+    ok, reason = quota.can(ip, "video")
+    if not ok:
+        raise HTTPException(429, reason)
+
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
+    quota.consume(ip, "video", f"/v/{task_id}")
     asyncio.create_task(_run_video(task, task_id, payload, plan_obj))
     return {"task_id": task_id}
 
@@ -646,7 +786,7 @@ async def video_render(payload: RenderIn) -> dict[str, str]:
 async def _run_video(
     task: TaskState, task_id: str, payload: RenderIn, plan_obj: Any
 ) -> None:
-    from .pipeline import opus_video, runs
+    from .pipeline import remotion_video, runs
     from .pipeline.video import save_video
 
     started = time.time()
@@ -678,59 +818,46 @@ async def _run_video(
             {
                 "type": "stage",
                 "stage": "render",
-                "label": f"{provider.label if provider else '模板'} 生成动画",
+                "label": f"{provider.label if provider else '模板'} 选卡分镜 + 逐镜头实现",
                 "model": provider.model if provider else "template",
             }
         )
 
         if provider is not None:
-            res = await opus_video.generate(llm, brief, plan_obj)
+            res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id)
             record["provider"] = res.provider_label
             record["model"] = res.model
-            record["attempts"] = res.history
-            record["gate"] = {"ok": res.gate.ok, "failures": res.gate.failures, "stats": res.gate.stats}
+            record["attempts"] = res.attempts
+            record["gate"] = {"ok": res.gate.ok, "failures": res.gate.failures, "stats": {
+                k: v for k, v in res.gate.stats.items() if k != "sfx"
+            }}
             await task.push(
                 {
                     "type": "gate",
                     "ok": res.gate.ok,
                     "failures": res.gate.failures,
-                    "stats": res.gate.stats,
+                    "stats": {k: v for k, v in res.gate.stats.items() if k != "sfx"},
                     "attempts": res.attempts,
                     "model": res.model,
                 }
             )
-            html = opus_video.wrap_meta(res.html, plan_obj, res)
-            # 每一版都落盘：被拦下的版本是最有复盘价值的东西
-            for i, h in enumerate(res.attempt_htmls, 1):
-                try:
-                    (settings.data_dir / "videos" / f"{task_id}-a{i}.html").write_text(h, encoding="utf-8")
-                except OSError:
-                    pass
-            # 只拦硬伤（截断/空白/不能播）。软伤（字少/覆盖低）照用+角标标注：
-            # Opus 一次 5-10 分钟，为「字少了点」重烧一遍 16k token 不划算
-            hard = res.gate.hard
+            # 工程级硬伤（Root/组件缺失）→ 降级模板；个别镜头落模板属软伤，照用+标注
+            hard = [] if res.gate.ok else [
+                f for f in res.gate.failures
+                if not f.startswith("Shot") or "文件缺失" in f
+            ]
             degraded = bool(hard)
             if degraded:
-                await task.push({"type": "note", "text": "产物有硬伤（无法播放），降级到模板渲染"})
+                await task.push({"type": "note", "text": "工程组装不完整，降级到模板渲染"})
                 save_video(
                     brief, "", task_id, settings.data_dir, plan_obj.style or "hud",
                     f"{plan_obj.name} · 降级模板",
                 )
-                record["degrade_reason"] = "硬伤：" + "；".join(hard)
-                record["rejected_html_chars"] = len(res.html)
+                record["degrade_reason"] = "工程硬伤：" + "；".join(hard)
             else:
-                opus_video.save(
-                    html,
-                    task_id,
-                    settings.data_dir,
-                    {
-                        "plan": plan_obj.model_dump(),
-                        "model": res.model,
-                        "provider": res.provider_label,
-                        "gate": {"ok": res.gate.ok, "stats": res.gate.stats},
-                        "attempts": res.attempts,
-                    },
-                )
+                remotion_video.write_info_page(res, task_id, settings.data_dir, res.model)
+                record["project_dir"] = str(res.project_dir)
+                record["fallback_shots"] = res.gate.stats.get("fallbacks", 0)
         else:
             # 视频模型没配凭据：直接走模板，不阻塞整条链路
             note = "mock 模式，不调模型" if settings.mock else "视频模型未配置，使用模板渲染"
@@ -757,10 +884,6 @@ async def _run_video(
             memory.set("last_video_style", plan_obj.style or "hud", "general")
         await task.push({"type": "done", "url": f"/v/{task_id}", "degraded": degraded,
                          "result": task.result})
-    except Exception as exc:
-        task.status = "failed"
-        record["error"] = f"{type(exc).__name__}: {exc}"
-        await task.push({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
     except Exception as exc:
         task.status = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"
@@ -831,6 +954,84 @@ async def index() -> FileResponse:
 async def runs_page() -> FileResponse:
     """生成记录页：复盘入口。"""
     return FileResponse(WEB_DIR / "runs.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/api/session/{session_id}")
+async def session_history(session_id: str) -> dict[str, Any]:
+    """返回某个会话的完整历史（按 session_id，同一 IP 刷新后恢复对话）。"""
+    from .session_history import get_history
+
+    msgs = get_history().history(session_id)
+    return {"session_id": session_id, "messages": msgs}
+
+
+@app.get("/admin")
+async def admin_page() -> FileResponse:
+    """管理员后台。"""
+    return FileResponse(WEB_DIR / "admin.html", media_type="text/html; charset=utf-8")
+
+
+# ============================================================
+# 管理员后台：按 IP 查看用户、访问流水、重置配额、设不限
+# ============================================================
+
+@app.get("/api/admin/users")
+async def admin_users(request: Request) -> dict[str, Any]:
+    require_admin(request)
+    return {"users": quota.users()}
+
+
+@app.get("/api/admin/session/{session_id}")
+async def admin_session(request: Request, session_id: str) -> dict[str, Any]:
+    """管理员查看某个用户的纯问答记录（不含任务卡/流程卡）。"""
+    require_admin(request)
+    from .session_history import get_history
+
+    qa = get_history().qa_history(session_id)
+    return {"session_id": session_id, "turns": qa}
+
+
+@app.get("/api/admin/turn/{task_id}")
+async def admin_turn(request: Request, task_id: str) -> dict[str, Any]:
+    """管理员按 task_id 查看某一轮的纯问答（流水表「查看对话」用）。"""
+    require_admin(request)
+    from .session_history import get_history
+
+    qa = get_history().turn_qa(task_id)
+    if qa is None:
+        raise HTTPException(404, "找不到这一轮对话")
+    return {"task_id": task_id, **qa}
+
+
+@app.get("/api/admin/log")
+async def admin_log(request: Request, limit: int = 100) -> dict[str, Any]:
+    require_admin(request)
+    return {"log": quota.log(limit=min(limit, 500))}
+
+
+@app.post("/api/admin/reset")
+async def admin_reset(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """重置某个 IP 的已用量。body: {"session_id": "..."}"""
+    require_admin(request)
+    sid = str(body.get("session_id") or "")
+    if not sid:
+        raise HTTPException(400, "缺 session_id")
+    if not quota.reset(sid):
+        raise HTTPException(404, "找不到这个用户")
+    return {"ok": True}
+
+
+@app.post("/api/admin/unlimited")
+async def admin_unlimited(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """给某个 IP 设置/取消不限。body: {"session_id": "...", "unlimited": true|false}"""
+    require_admin(request)
+    sid = str(body.get("session_id") or "")
+    if not sid:
+        raise HTTPException(400, "缺 session_id")
+    flag = bool(body.get("unlimited"))
+    if not quota.set_unlimited(sid, flag):
+        raise HTTPException(404, "找不到这个用户")
+    return {"ok": True, "unlimited": flag}
 
 
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")

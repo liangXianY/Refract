@@ -88,7 +88,19 @@ def build_providers() -> dict[str, Provider]:
             model=_env("DEEPSEEK_MODEL", default="deepseek-flash"),
             max_tokens=8000,
         ),
-        # 代码/视觉主力：中转站 Opus，走 Anthropic 协议
+        # 代码/长输出主力：deepseek-chat 是非推理模型，不会把额度全烧在思考上，
+        # 适合一次性吐几千行 HTML 的成片代码。flash 是推理模型，长输出必被截断。
+        "deepseek-chat": Provider(
+            key="deepseek-chat",
+            label="DeepSeek（代码）",
+            protocol="openai",
+            base_url=_env("DEEPSEEK_BASE_URL", default="https://api.deepseek.com"),
+            api_key=ds_key,
+            model=_env("DEEPSEEK_CHAT_MODEL", default="deepseek-chat"),
+            max_tokens=8000,
+        ),
+        # 代码/视觉主力（可选）：中转站 Opus，走 Anthropic 协议。默认视频链路不走它，
+        # 需要更强视觉时把 video 路由切回 cctq 即可。
         "cctq": Provider(
             key="cctq",
             label="Opus 5.5（中转）",
@@ -115,7 +127,9 @@ def build_providers() -> dict[str, Provider]:
 # 用途 → 首选 provider key，按顺序降级
 DEFAULT_ROUTES: dict[str, list[str]] = {
     "text": ["deepseek"],
-    "video": ["cctq", "deepseek-anthropic"],
+    # 视频成片 + custom 风格设计默认走 Opus（视觉/代码理解强）。
+    # deepseek-chat 兜底：本地测试没配 CCTQ 凭据时自动落到它，省钱跑通链路。
+    "video": ["cctq", "deepseek-chat"],
 }
 
 

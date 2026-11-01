@@ -38,8 +38,8 @@ _CAPABILITY = re.compile(r"(你能(干|做|干什么|做什么)|你会(什么|�
 _IDENTITY = re.compile(r"(你是谁|你叫什么|介绍下?你自己|self.?intro)", re.I)
 
 _GREETING_REPLIES = [
-    "你好。丢给我一句话、一篇稿或一个链接都行——写公众号、出视频方案、看 GitHub 热点都可以。",
-    "嗨。想写点什么，还是先看看最近 GitHub 上有什么热的东西？",
+    "你好。丢给我一句话、一篇稿或一个链接都行——写公众号、出视频方案、看各平台热点都可以。",
+    "嗨。想写点什么，还是先看看小红书、微博、GitHub 最近什么火？",
 ]
 _THANKS_REPLIES = ["不客气。有下一个直接说。", "小事。下一个。"]
 
@@ -67,7 +67,7 @@ def small_talk(text: str) -> str | None:
             "现在能干的：\n"
             "1. 写文章 —— 一句话或一个链接，走完规划、写作、自检迭代，产出能直接发的稿\n"
             "2. 解析链接 —— GitHub 仓库连 star 数和 README 一起拿，普通网页抽正文\n"
-            "3. GitHub 热点 —— 拉最近几天 star 涨得最快的新仓库，选一个直接成稿\n"
+            "3. 热点榜单 —— 小红书/微博/知乎/抖音/B站实时热榜，GitHub 新星仓库，选一个直接成稿\n"
             "4. 视频方案 —— 给主题出三套拍法，选定后生成动画成片\n"
             "直接说需求就行。"
         )
@@ -80,33 +80,79 @@ def small_talk(text: str) -> str | None:
 
 PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计划。
 
-可用工具：
-- fetch_url {"url": "..."}          解析链接内容。GitHub 仓库会连 star 数、语言、README 一起返回；普通网页抽正文
-- web_search {"query": "..."}       联网搜索，返回带来源链接的最新资料；写时效性/热点/对比类内容先用它取素材
-- github_trending {"days": 7}       拉近 N 天 GitHub 上 star 涨得最快的新仓库
+可用工具（三个「取信息」工具要分清，别用错）：
+
+【取信息三件套——本质不同，按用户意图选】
+- hot_topics {"source": "...", "limit": 10}
+    拉某个平台的「热榜/热搜」——返回的是**榜单**（按热度排序的标题列表 + 热度值）。
+    用户要「看看某平台最近什么火、热榜、热搜、流行」时才用。source 可选：
+    rednote=小红书、weibo=微博、zhihu=知乎、douyin=抖音、bilibili=B站、
+    baidu=百度热搜、tieba=百度贴吧。
+- lookup_hot {"title": "...", "source": "..."}
+    针对榜单里的**某一条热点**，联网搜它的正文/报道，搞清楚「这条到底讲什么」。
+    热榜只给标题没给内容，用户追问「XX 是怎么回事」时用这个，别用 web_search
+    （裸搜标题会被同名无关内容带偏，比如「海鸥雨」裸搜会搜出契诃夫《海鸥》话剧）。
+- web_search {"query": "..."}
+    **泛化的网页搜索**——搜事实、概念、天气、新闻、价格、人物、事件。返回带来源链接的摘要。
+    它跟「榜单」无关：用户问「XX 是什么/多少钱/怎么样」这种具体问题用它，
+    而不是用户想看「某平台热榜」时用它。
+
+【其余工具】
+- today {}                          获取今天的真实日期（年月日+星期）。写/问时效性内容（天气、新闻、
+                                    行情、节日）前**必须先调它**——你的训练数据是旧的，别拿记忆里的日期当今天
+- fetch_url {"url": "..."}          解析一个链接的内容（网页抽正文 / GitHub 仓库信息）
+- github_trending {"days": 7}       拉 GitHub 上 star 涨最快的新仓库（也是榜单，但专指 GitHub）
 - write_article {"input": "...", "platform": "wechat|xiaohongshu|video", "words": "short|medium|long"}
-                                    写一篇可发布的文案。走完整的规划-写作-自检迭代，耗时 1-2 分钟。正文会流式输出，不需要你转述
+                                    写一篇可发布的文案。走完整的规划-写作-自检迭代。正文流式输出，不用你转述
 - video_plans {"input": "..."}      为主题出三套视频拍法，用户会挑一个
 - memory_recall {}                  读取用户的人设偏好和历史表现
 
-硬规则：
-1. 闲聊、问候、问你能干什么 → steps 空数组，reply 里直接回答，要短，像人说话
-2. 用户没提视频就不要安排视频，没提写稿就不要安排写稿。安排任务只看用户明说的
-3. 「看看热点」「最近有什么火的」 → github_trending
-4. 「分析/看看/读一下 + 链接」 → fetch_url
-5. 「写一篇/出文案/发公众号」 → write_article，platform 按用户说的，默认 wechat；
-   内容涉及时效信息（最近发生了什么/价格/版本/新闻）时，前面加一步 web_search
-6. 明确要视频 → video_plans
-7. 复合需求可以拆多步（先拉热点再写稿就是两步），但不超过 3 步，按依赖排序
-8. write_article 的 input 要把用户的完整要求写清楚，不能只写四个字
+决策流程（先判断任务属于哪一类，再定工具，不是套固定流程）：
+
+【第一类：直接回答，不调工具】
+- 闲聊、问候、问你能干什么 → steps 空数组，reply 直接答
+- 「上一个问题/刚才说的/之前问的」回顾性 → steps 空数组，从「对话前文」里找上一句原文作答
+
+【第二类：取信息再回答（简单问题，别搞复杂流程）】
+- 用户想看「某平台热榜/热搜/最近什么火」 → hot_topics（这是拉榜单，不是搜网页）
+- 用户追问榜单里某条「是什么/说的什么」 → lookup_hot 读详情
+- 用户问具体事实/概念/新闻/价格（跟榜单无关） → web_search
+- **问天气/新闻/行情等时效性问题 → 先 today 取今天日期，再 web_search 带正确日期搜**
+  （否则会拿过时的日期去搜，答非所问）
+- 给了链接要「读一下/分析」 → fetch_url
+- 以上取到素材就行，别加多余步骤。取到后 summarize=true，说人话给用户。
+
+【第三类：编排任务（要产出内容，才多步编排）】
+- 明确要写文章/做视频 → 才安排 write_article / video_plans，必要时前面加取素材步骤
+  （拿热榜写稿 → hot_topics；写时效性内容 → web_search；给链接写稿 → fetch_url）
+
+【没有工具能做到的，明说做不到】
+- 如果用户要的东西，上面的工具一个都做不了（比如"帮我打电话""帮我订机票""控制我的手机"），
+  就 steps 空数组，reply 里直接说「这个我做不了，我能做的是 xxx」，别硬编、别假装、别硬套一个不相关的工具。
+  诚实比逞能重要。
+
+工具选择细则（热点 vs 搜索，务必分清）：
+- 「看看热点」「最近有什么火的」「XX热榜/热搜」 → hot_topics（拉榜单，不是 web_search）
+- 追问某条热点「是什么/说的什么」 → lookup_hot（带 source），别裸 web_search
+- 「XX 是什么/多少钱/怎么样/为什么」这类具体问题 → web_search（跟榜单无关）
+- 「结合热点写小红书/公众号」 → hot_topics（+可选 lookup_hot）再 write_article
+- 「分析/读一下 + 链接」 → fetch_url
+- 复合任务最多 3 步，按依赖排序
+- write_article 的 input 要写清楚完整要求，不能只写四个字
 
 只输出 JSON：
 {
-  "reply": "不需要工具时给用户的直接回复；有工具时给一句开工说明（10 字以内）",
+  "reply": "不需要工具时的直接回复；有工具时给一句开工说明（10 字以内）；做不到时直接说做不到",
+  "summarize": true,
   "steps": [
-    {"tool": "github_trending", "args": {}, "title": "拉 GitHub 热点", "why": "用户想看最近什么火"}
+    {"tool": "web_search", "args": {"query": "..."}, "title": "联网查询", "why": "用户问了事实性问题"}
   ]
 }
+
+关于 summarize 字段：
+- 第二类（联网查再回答）→ 一定 true，你要把搜索结果说人话
+- 第三类里 write_article/video_plans 自己会输出正文/方案 → false，避免重复
+- 做不到/闲聊 → 无所谓（没工具执行，用不上）
 """
 
 
@@ -122,6 +168,7 @@ class Step:
 class Plan:
     reply: str = ""
     steps: list[Step] = field(default_factory=list)
+    summarize: bool | None = None  # None=未指定(按默认规则)，True/False=planner 显式控制
     mocked: bool = False
 
 
@@ -134,18 +181,27 @@ def _fallback_plan(text: str) -> Plan:
     from .intent import detect, extract_url
 
     it = detect(text)
-    if it.kind in ("research", "fetch_and_article"):
+    if it.kind == "research":
+        # 只了解不产出：有链接抓链接，没链接就联网搜一把讲清楚，不写稿。
+        # 这类「问个问题要答案」的场景，搜完必须总结回复
+        url = extract_url(text)
+        if url:
+            steps = [Step("fetch_url", {"url": url}, "解析链接")]
+        else:
+            steps = [Step("web_search", {"query": text[:100]}, "联网了解")]
+        return Plan(reply="帮你查一下。", steps=steps, summarize=True)
+    if it.kind == "fetch_and_article":
         url = extract_url(text)
         steps = [Step("fetch_url", {"url": url}, "解析链接")]
-        if it.kind == "fetch_and_article":
-            steps.append(Step("write_article", {"input": text}, "写文章"))
+        steps.append(Step("write_article", {"input": text}, "写文章"))
         return Plan(reply="按规则直接安排。", steps=steps)
     if it.kind == "video":
         return Plan(reply="出视频方案。", steps=[Step("video_plans", {"input": text}, "出三套视频方案")])
+    # article（明确写了要产出）才走写稿
     return Plan(reply="收到。", steps=[Step("write_article", {"input": text, "platform": "wechat"}, "写文章")])
 
 
-async def make_plan(llm: LLMClient, text: str) -> Plan:
+async def make_plan(llm: LLMClient, text: str, context: str = "") -> Plan:
     if llm.cfg.mock:
         # mock 模式也走规则版，保证链路可测且零成本
         p = _fallback_plan(text)
@@ -160,11 +216,15 @@ async def make_plan(llm: LLMClient, text: str) -> Plan:
             if s.get("tool") not in known:
                 raise ValueError(f"未知工具：{s.get('tool')}")
 
+    user_prompt = f"用户消息：{text[:1500]}"
+    if context:
+        user_prompt = f"{context}\n\n{user_prompt}"
+
     try:
         data = await llm.structured(
             system=PLANNER_SYSTEM,
-            user=f"用户消息：{text[:1500]}",
-            max_tokens=1200,
+            user=user_prompt,
+            max_tokens=3000,  # 推理模型的思考 token 共用额度，1200 会被吃光
             temperature=0.2,
             validate=_validate,
             route="text",
@@ -181,7 +241,11 @@ async def make_plan(llm: LLMClient, text: str) -> Plan:
         )
         for s in data.get("steps", [])[:3]
     ]
-    return Plan(reply=str(data.get("reply") or "")[:300], steps=steps)
+    return Plan(
+        reply=str(data.get("reply") or "")[:300],
+        steps=steps,
+        summarize=data.get("summarize") if isinstance(data.get("summarize"), bool) else None,
+    )
 
 
 # ============================================================
@@ -239,6 +303,77 @@ async def _run_web_search(args: dict, llm, keeper, task_id, emit, results) -> di
         "summary": f"「{query[:24]}」搜到 {len(res.items)} 条资料",
         "query": query,
         "material": to_material(res),  # 带 URL 来源，写作时事实点可溯源
+    }
+
+
+async def _run_hot_topics(args: dict, llm, keeper, task_id, emit, results) -> dict:
+    from ..pipeline.hotlist import SOURCES, HotListError, fetch_hot, to_material
+
+    source = str(args.get("source") or "rednote").strip().lower()
+    # 模型有时给中文名，兜底映射一下
+    alias = {"小红书": "rednote", "微博": "weibo", "知乎": "zhihu", "抖音": "douyin",
+             "b站": "bilibili", "哔哩哔哩": "bilibili", "百度": "baidu",
+             "贴吧": "tieba", "百度贴吧": "tieba"}
+    source = alias.get(source, source)
+    try:
+        hl = await fetch_hot(source, limit=int(args.get("limit") or 10))
+    except HotListError as exc:
+        # 热榜是灵感素材不是关键路径：拿不到就明说，别让整步计划崩
+        await emit({"type": "tool_detail", "lines": [f"热榜接口没拿到数据：{exc}"]})
+        return {
+            "tool": "hot_topics",
+            "summary": f"{SOURCES.get(source, source)}拉取失败",
+            "material": "",
+        }
+    await emit({"type": "tool_detail", "lines": [
+        f"{i['rank']}. {i['title']}" + (f"（{i['score']}）" if i["score"] else "")
+        for i in hl.items[:10]
+    ]})
+    return {
+        "tool": "hot_topics",
+        "summary": f"{hl.source_label} top{len(hl.items)}",
+        "source": hl.source,
+        "items": hl.items,
+        "material": to_material(hl),  # 自动流入 write_article
+    }
+
+
+async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> dict:
+    """针对某条热点标题搜正文：热榜只有标题+热度，要「理解」这条热点讲什么，
+    必须联网读详情。这是「了解热点」和「拿热点写稿」都能用的公共步骤。"""
+    from ..pipeline.search import SearchError, search, to_material
+
+    title = str(args.get("title") or "").strip()
+    source = str(args.get("source") or "").strip()
+    if not title:
+        # 允许从前序 hot_topics 里自动取：用户说「第一条讲讲」时 title 可能是空的
+        prev = next((r for r in results if r.get("tool") == "hot_topics"), None)
+        idx = args.get("rank")
+        if prev and idx is not None:
+            try:
+                title = prev["items"][int(idx)]["title"]
+                source = source or prev.get("source", "")
+            except (IndexError, KeyError, ValueError):
+                title = ""
+    if not title:
+        raise ToolError("缺 title（要读哪条热点）")
+
+    # 关键：裸搜标题会被无关内容带偏（「海鸥雨」裸搜会搜出契诃夫《海鸥》）。
+    # 必须带上平台语境，让搜索引擎知道这是「某平台的某条热点」，而不是泛泛的词。
+    source_hint = {"rednote": "小红书", "weibo": "微博", "zhihu": "知乎",
+                   "douyin": "抖音", "bilibili": "B站", "baidu": "百度",
+                   "tieba": "百度贴吧"}.get(source, "")
+    query = f"{title} {source_hint}".strip() if source_hint else title
+    try:
+        res = await search(query, max_results=6)
+    except SearchError as exc:
+        await emit({"type": "tool_detail", "lines": [f"搜索热点详情失败：{exc}"]})
+        return {"tool": "lookup_hot", "summary": f"「{title[:20]}」详情搜索失败", "material": ""}
+    await emit({"type": "tool_detail", "lines": [f"搜「{query[:30]}」找到 {len(res.items)} 篇相关"]})
+    return {
+        "tool": "lookup_hot",
+        "summary": f"「{title[:20]}」详情",
+        "material": to_material(res),
     }
 
 
@@ -353,9 +488,25 @@ async def _run_memory_recall(args: dict, llm, keeper, task_id, emit, results) ->
     }
 
 
+async def _run_today(args: dict, llm, keeper, task_id, emit, results) -> dict:
+    """返回今天的日期。写时效性内容（天气/新闻/行情）前先取它，
+    否则模型可能用训练时的旧日期，把过时信息当今天。"""
+    from datetime import datetime
+
+    now = datetime.now()
+    return {
+        "tool": "today",
+        "summary": f"今天是 {now.strftime('%Y-%m-%d')}（{['周一','周二','周三','周四','周五','周六','周日'][now.weekday()]}）",
+        "material": f"今天日期：{now.strftime('%Y年%m月%d日')} {['周一','周二','周三','周四','周五','周六','周日'][now.weekday()]}",
+    }
+
+
 TOOLS: dict[str, dict] = {
+    "today": {"title": "获取今天日期", "runner": _run_today},
     "fetch_url": {"title": "解析链接", "runner": _run_fetch_url},
     "web_search": {"title": "联网搜索", "runner": _run_web_search},
+    "hot_topics": {"title": "拉平台热榜", "runner": _run_hot_topics},
+    "lookup_hot": {"title": "读热点详情", "runner": _run_lookup_hot},
     "github_trending": {"title": "拉 GitHub 热点", "runner": _run_github_trending},
     "write_article": {"title": "写文章（规划-写作-反思）", "runner": _run_write_article},
     "video_plans": {"title": "出视频方案", "runner": _run_video_plans},
@@ -374,8 +525,16 @@ async def handle_chat(
     llm: LLMClient,
     keeper: MemoryKeeper,
     emit: Emitter,
+    session_id: str = "",
+    context: str = "",
+    ip: str = "",
 ) -> dict:
-    """对话入口。返回结果 dict（给留痕用）。"""
+    """对话入口。返回结果 dict（给留痕用）。
+
+    session_id + context：跨轮上下文。上一轮拉过热榜，这一轮追问「海鸥雨
+    是什么」，planner 靠 context 知道「海鸥雨」是刚拉过的热点，才会正确
+    用 lookup_hot 而不是裸搜。
+    """
     t0 = time.time()
 
     # --- 第一层：规则 ---
@@ -387,7 +546,7 @@ async def handle_chat(
 
     # --- 第二层：规划 ---
     await emit({"type": "stage", "stage": "plan", "label": "主 Agent 规划任务"})
-    plan = await make_plan(llm, text)
+    plan = await make_plan(llm, text, context)
     await emit(
         {
             "type": "plan",
@@ -411,6 +570,17 @@ async def handle_chat(
         if spec is None:
             failed.append(f"{step.tool}: 未知工具")
             continue
+        # 配额预检查：对话里「写文章」和文章板块共用 article 配额，
+        # 不能让用户靠 10 轮对话无限白嫖生成文章（视频成片走 /api/video/render，已单独计）
+        if step.tool == "write_article" and ip:
+            from ..quota import get_quota
+
+            _q = get_quota()
+            _ok, _reason = _q.can(ip, "article")
+            if not _ok:
+                failed.append(f"write_article: {_reason}")
+                await emit({"type": "step_end", "i": i, "tool": step.tool, "status": "failed", "summary": _reason})
+                continue
         await emit({"type": "step_start", "i": i, "tool": step.tool, "title": step.title or spec["title"]})
         ts = time.time()
         try:
@@ -418,6 +588,11 @@ async def handle_chat(
             out["elapsed_ms"] = int((time.time() - ts) * 1000)
             out["title"] = step.title
             results.append(out)
+            # 文章真的写出来了，才扣 article 配额（预检查只拦，不扣；这里落账）
+            if step.tool == "write_article" and ip:
+                from ..quota import get_quota
+
+                get_quota().consume(ip, "article", f"/r/{task_id}")
             await emit({"type": "step_end", "i": i, "tool": step.tool, "status": "ok", "summary": out["summary"], "elapsed_ms": out["elapsed_ms"]})
         except Exception as exc:
             msg = f"{type(exc).__name__}: {exc}"
@@ -437,30 +612,37 @@ async def handle_chat(
     if plans_step:
         await emit({"type": "video_plans", **{"plans": plans_step["plans"], "brief": plans_step["brief"]}})
 
-    # 需要文字答复的：热点/解析类，让模型基于结果说人话
-    needs_summary = any(r["tool"] in ("github_trending", "fetch_url", "memory_recall") for r in results)
-    if needs_summary:
+    # 是否生成文字答复：默认「有内容就总结」（泛化，不依赖模型输出字段），
+    # planner 明确说 summarize=false 时才跳过（写稿/出视频这种工具自己输出的场景）。
+    material_results = [r for r in results if r.get("material") or r.get("items")]
+    if material_results and plan.summarize is not False:
         brief_lines = []
-        for r in results:
-            if r["tool"] == "github_trending":
-                brief_lines += [
-                    f"- {i['full_name']}（★{i['stars']} {i['language']}）：{(i['description'] or '')[:60]}"
-                    for i in r["items"]
-                ]
-            elif r["tool"] == "fetch_url":
+        for r in material_results:
+            tool = r["tool"]
+            if tool == "hot_topics" and r.get("items"):
+                brief_lines += [f"- {i['rank']}. {i['title']}" + (f"（{i['score']}）" if i.get("score") else "") for i in r["items"]]
+            elif tool == "github_trending" and r.get("items"):
+                brief_lines += [f"- {i['full_name']}（★{i['stars']} {i['language']}）：{(i.get('description') or '')[:60]}" for i in r["items"]]
+            elif tool == "lookup_hot":
+                brief_lines.append(f"【热点详情】\n{r['material']}")
+            elif tool == "fetch_url":
                 brief_lines.append(f"- {r['summary']}\n  摘录：{r['material'][:600]}")
-            elif r["tool"] == "memory_recall":
+            elif tool == "memory_recall" and r.get("items"):
                 brief_lines.append(f"- 记忆里有：{', '.join(i['key'] for i in r['items'])}")
+            elif r.get("material"):
+                # 兜底：任何带 material 的工具（web_search 等）直接把素材喂给模型
+                brief_lines.append(r["material"])
         if failed:
             brief_lines.append(f"- 失败的步骤：{'; '.join(failed)}")
 
         gave = ""
         async for kind, chunk in llm.stream(
             system="你是 Refract 的助手。基于工具返回的结果，用中文给用户一个干脆的答复。"
-            "列表就按要点列，别加套话开头（不要'好的''当然'）。控制在 200 字内。"
-            "如果结果里有 GitHub 仓库，告诉用户可以直接说「用 xxx 写一篇」来成稿。",
-            user="工具结果：\n" + "\n".join(brief_lines),
-            max_tokens=600,
+            "用户问什么就答什么（问天气就报天气、问新闻就说新闻、问对比就列对比），"
+            "直接回答，别讲流程。列表类就按要点列，别加套话开头（不要'好的''当然'）。"
+            "控制在 400 字内。如果结果里有 GitHub 仓库或热点，可以提示用户「要写成稿就说一声」。",
+            user=f"用户问的是：\n{text}\n\n工具结果：\n" + "\n\n".join(brief_lines),
+            max_tokens=2400,  # deepseek-flash 是推理模型，reasoning 会和正文抢额度，900 会把答复拦腰截断
             temperature=0.4,
             route="text",
         ):

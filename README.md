@@ -220,7 +220,10 @@ app/
     fetch.py         链接抓取（trafilatura + SSRF 防护）
     memory.py        三层记忆：会话 / 项目 / 长期结构
     director.py      三套视频方案推荐
-    opus_video.py    整份动画 HTML 生成 + 四道闸门
+    recipes.py       video-shotcraft 配方卡索引（124 张，frontmatter 解析）
+    remotion_video.py 视频方案 v2：选卡分镜 → 逐镜头 TSX → Remotion 工程拼装 + 闸门
+    sfx.py           SFX 本地确定性合成（wav，与画面同源 mulberry32）
+    opus_video.py    [legacy] 整份动画 HTML 生成（已被 remotion_video 替代）
     video.py         模板渲染（降级路径）
     renderer.py      文章产物渲染
   main.py            FastAPI：SSE、任务、产物、模型路由
@@ -228,9 +231,16 @@ mcp_server.py        7 个 MCP tool（抓取/文案/分镜/渲染/记忆）
 web/                 前端（原生 JS，无构建步骤）
 tests/
   smoke.py           端到端冒烟
-  video_probe.py     视频链路真实模型探针（出方案 → 成片 → 闸门）
+  video_probe.py     [legacy] 旧视频链路探针
+  remotion_probe.py  Remotion 管线真实模型探针（DeepSeek 跑通 → 完整工程）
+  test_remotion.py   管线单测：闸门/SFX/映射校验/mock 全链路
   preview.py         离线产物预览
 ```
+
+视频产物形态（v2）：**Remotion 工程**（不出 mp4）。产物页给出镜头表/音效表/预览指引，
+本地 `npm install && npm run studio` 在浏览器预览。模型路由：本地测试 deepseek-chat
+（逐镜头生成，8k token 内），上线配好 CCTQ 凭据自动切 Opus（`data/models.json` 路由表，
+代码零改动）。
 
 ---
 

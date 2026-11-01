@@ -40,9 +40,18 @@ footer{padding:16px 40px;border-top:1px solid var(--line);font-size:10.5px;color
 <footer><span>每次生成落一份 JSON：输入 / 方案 / 每版闸门 / 失败原因 / 耗时</span><span>data/runs/</span></footer>
 <script>
 const KIND = {article:'文章', video:'视频', chat:'对话', chitchat:'闲聊', task:'任务'};
+const KEY = () => localStorage.getItem('refract_admin_key') || '';
+function authHeaders() { return { 'x-admin-key': KEY() }; }
+
 async function load() {
+  // 未登录先问密码
+  if (!KEY()) {
+    const pwd = prompt('管理员密码：');
+    if (!pwd) { list.innerHTML = '<p class="empty">需要管理员密码才能查看生成记录</p>'; return; }
+    localStorage.setItem('refract_admin_key', pwd);
+  }
   try {
-    const d = await (await fetch('/api/runs?limit=100')).json();
+    const d = await (await fetch('/api/runs?limit=100', { headers: authHeaders() })).json();
     const runs = d.runs || [];
     document.getElementById('sum').textContent = `共 ${runs.length} 条`;
     if (!runs.length) { list.innerHTML = '<p class="empty">还没有生成记录</p>'; return; }
@@ -64,7 +73,13 @@ async function load() {
       </div>`;
     }).join('');
   } catch (e) {
-    list.innerHTML = `<p class="empty">加载失败：${esc(e.message)}</p>`;
+    // 密码错了清掉重试
+    if (e.message && e.message.includes('401')) {
+      localStorage.removeItem('refract_admin_key');
+      list.innerHTML = '<p class="empty">密码错误，刷新重试</p>';
+    } else {
+      list.innerHTML = `<p class="empty">加载失败：${esc(e.message)}</p>`;
+    }
   }
 }
 function esc(s) { return String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }

@@ -55,7 +55,9 @@ SYSTEM = """你是 Motion Graphics 工程师，用 Canvas 2D 写一条中文演�
   禁用 Math.random()——画面必须可复现，重放两次要一模一样
 - 主动避开"没有任何限制时最容易出来的样子"：深色背景+居中大字+所有元素一起淡入淡出、
   角落里装饰性的标签和边框、无意义的发光。风格需要深色时（CRT/夜景/霓虹）照用，但排版要有自己的设计
-- 文字一屏最多一句，每段至少停留 2.5 秒；每 2-4 秒画面上要有新东西出现
+- 文字一屏最多一句，每句至少停留 4 秒（宁可少切镜头，也要让观众把字读完）；
+  不要为了"每 2-4 秒有新东西"而把镜头切碎——一句话没读完就切，是节奏事故不是动感
+- 关键文字（标题/结论）停留 5-6 秒，普通要点停留 4 秒起；节奏点要服从「读完」这个第一优先级
 - 主体要大：核心元素至少占画面 1/3；镜头可以推拉跟随，不要全程固定机位把画面撑空
 - 循环要无缝：最后一帧的状态（位置/透明度/光标）必须和第一帧完全一致
 - 关键动作对齐节拍：把最重要的状态变化放在 t = DUR/8 的整数倍上——音效引擎在这些点发音，声画才会同步
@@ -275,8 +277,11 @@ def _brief_block(brief: ContentBrief, plan: VideoPlan) -> str:
         )
     else:
         lines.append(
-            "风格：custom——视觉语言完全由你原创。配色、字体气质、图形语言都自己定，"
-            "但必须自成一体且贴合内容；工艺规则（固定种子/缓动/节拍/文字停留）仍然全部适用。"
+            "风格：custom——视觉语言完全由你原创，绝不落回深底科技风/网格/发光这套默认皮肤。"
+            f"概念来自「{plan.concept}」：请严格按这个概念里的视觉隐喻来做（比如是水墨就用水墨的"
+            "笔触和宣纸底，是乐谱就用五线谱和音符，是地图就用等高线和图例）。"
+            "配色、字体气质、图形语言都要从隐喻本身长出来，而不是另起一套通用的科技感。"
+            "工艺规则（固定种子/缓动/节拍/文字停留）仍然全部适用。"
         )
     lines += ["", "要点（按顺序出现在画面上）："]
     for i, s in enumerate(brief.outline[:6], 1):
@@ -466,10 +471,13 @@ def wrap_meta(html: str, plan: VideoPlan, res: VideoResult) -> str:
 
 
 def save(html: str, task_id: str, data_dir: Path, meta: dict) -> Path:
+    from .textutil import clean_text
+
     out = data_dir / "videos"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{task_id}.html"
-    path.write_text(html, encoding="utf-8")
+    # Opus 输出的 HTML 偶尔混入被截断的 surrogate 字符，utf-8 编码会炸，先清洗
+    path.write_text(clean_text(html), encoding="utf-8")
     (out / f"{task_id}.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )

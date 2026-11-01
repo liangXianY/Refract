@@ -47,8 +47,9 @@ mcp = MCPServer(
     name="refract",
     instructions=(
         "Refract 是内容生产流水线：给一个链接或一句话，产出公众号文案、分镜、动画视频页。"
-        "先用 fetch_url 抓素材，再 compose_article 写稿，plan_video 出分镜，render_video 出片。"
-        "记忆用 memory_write 存人设/禁用词，memory_recall 读回来。"
+        "能力分四组：① 取素材——fetch_url 抓网页、hot_topics 拉平台热榜、web_search 联网搜、"
+        "lookup_hot 读热点详情；② 写稿——compose_article；③ 视频——plan_video 出分镜、"
+        "render_video 出片；④ 记忆——memory_write 存、memory_recall 读。"
     ),
 )
 
@@ -71,6 +72,72 @@ async def fetch_url_tool(url: str) -> str:
         return f"抓取失败：{exc}"
     body = to_prompt_material(page, limit=1500)
     return f"抓到了 {page.word_count} 字。\n\n{body}"
+
+
+# ---------------- 1b. 平台热榜 + 联网搜索 + 热点详情 ----------------
+
+@mcp.tool()
+async def hot_topics(source: str = "rednote", limit: int = 10) -> str:
+    """拉平台实时热榜（小红书/微博/知乎/抖音/B站/百度）。
+
+    source: rednote | weibo | zhihu | douyin | bilibili | baidu
+    返回排名、标题、热度。这是「了解最近什么火」的入口，只给标题热度，
+    想深入某条热点用 lookup_hot 读详情。
+    """
+    from app.pipeline.hotlist import SOURCES, HotListError, fetch_hot
+
+    try:
+        hl = await fetch_hot(source, limit=limit)
+    except HotListError as exc:
+        return f"热榜获取失败：{exc}"
+    lines = [f"【{hl.source_label}】实时热榜："]
+    for it in hl.items:
+        seg = f"{it['rank']}. {it['title']}"
+        if it["score"]:
+            seg += f"（热度 {it['score']}）"
+        lines.append(seg)
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def web_search(query: str, max_results: int = 5) -> str:
+    """联网搜索，返回带来源链接的最新资料。
+
+    适合写时效性/热点/对比类内容时先取素材，也适合「查一下某件事」。
+    """
+    from app.pipeline.search import SearchError, search
+
+    try:
+        res = await search(query, max_results=max_results)
+    except SearchError as exc:
+        return f"搜索失败：{exc}"
+    lines = [f"搜索「{query}」共 {len(res.items)} 条：", ""]
+    for i, r in enumerate(res.items, 1):
+        lines.append(f"[{i}] {r['title']}")
+        lines.append(f"    来源：{r['url']}")
+        lines.append(f"    {r['content'][:300]}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def lookup_hot(title: str) -> str:
+    """针对某条热点标题搜正文，理解这条热点到底讲什么。
+
+    热榜只给标题，要写稿或深入解释某条热点，先用这个读详情。
+    """
+    from app.pipeline.search import SearchError, search
+
+    try:
+        res = await search(title, max_results=5)
+    except SearchError as exc:
+        return f"详情搜索失败：{exc}"
+    lines = [f"「{title}」相关报道 {len(res.items)} 篇：", ""]
+    for i, r in enumerate(res.items, 1):
+        lines.append(f"[{i}] {r['title']}（{r['url']}）")
+        lines.append(f"    {r['content'][:400]}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------- 2. 写文案 ----------------

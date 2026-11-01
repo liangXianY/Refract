@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Refract · 管理后台</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#fbfbf9;color:#111211;font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;line-height:1.6}
+  header{background:#111211;color:#fff;padding:16px 24px;display:flex;align-items:center;gap:12px}
+  header .logo{width:28px;height:28px;border-radius:7px;background:#12a37f;display:grid;place-items:center;font-weight:700}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sub{font-size:11px;color:#9aa;letter-spacing:.08em}
+  main{max-width:1000px;margin:0 auto;padding:24px}
+  .card{background:#fff;border:1px solid #e6e6e2;border-radius:12px;padding:20px;margin-bottom:20px}
+  .card h2{font-size:14px;margin:0 0 16px;letter-spacing:-.01em}
+  .login-box{max-width:360px;margin:60px auto}
+  .login-box input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;font-size:14px;margin-bottom:12px}
+  .login-box button{width:100%;padding:10px;border:0;border-radius:8px;background:#111211;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+  .login-box button:hover{background:#12a37f}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;background:#f2f4f2;padding:9px 12px;font-weight:700;border-bottom:2px solid #12a37f}
+  td{padding:9px 12px;border-bottom:1px solid #eeeee9;vertical-align:top}
+  tr:hover td{background:#fafbfa}
+  .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;background:#f2f4f2;color:#555}
+  .tag.unlimit{background:#e6f5ef;color:#0d7a5f}
+  .tag.limit{background:#fdf3e7;color:#c98a1e}
+  .btn{padding:5px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;margin-right:6px}
+  .btn:hover{border-color:#12a37f;color:#12a37f}
+  .err{color:#c0392b}
+  .muted{color:#999;font-size:12px}
+  .empty{padding:30px;text-align:center;color:#999}
+  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .toolbar .spacer{margin-left:auto}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100}
+  .modal-card{background:#fff;border-radius:14px;width:min(720px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e6e6e2}
+  .modal-h h2{font-size:15px;margin:0}
+  .modal-body{padding:20px;overflow-y:auto}
+  .qa{border:1px solid #e6e6e2;border-radius:10px;margin-bottom:14px;overflow:hidden}
+  .qa-q,.qa-a{display:flex;gap:12px;padding:12px 16px}
+  .qa-q{background:#f6f8f7}
+  .qa-q b,.qa-a b{flex:none;width:20px;height:20px;border-radius:5px;display:grid;place-items:center;font-size:11px;color:#fff}
+  .qa-q b{background:#555}
+  .qa-a b{background:#12a37f}
+  .qa p{margin:0;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">R</div>
+  <h1>Refract</h1><span class="sub">ADMIN · 管理后台</span>
+  <div style="margin-left:auto" class="sub">按 IP 追踪用量与产物</div>
+</header>
+
+<main>
+  <!-- 登录 -->
+  <div class="card login-box" id="loginBox">
+    <h2>管理员登录</h2>
+    <input id="adminPwd" type="password" placeholder="输入管理员密码" autocomplete="off"/>
+    <button id="loginBtn">登录</button>
+    <p class="err" id="loginErr" style="display:none"></p>
+  </div>
+
+  <!-- 主面板 -->
+  <div id="panel" style="display:none">
+    <div class="card">
+      <div class="toolbar">
+        <h2 style="margin:0">用户与配额</h2>
+        <span class="muted">默认：对话 10 · 视频 1 · 文章 3（永久配额，用完成止）</span>
+        <span class="spacer"></span>
+        <button class="btn" id="refreshBtn">刷新</button>
+      </div>
+      <div id="usersBox"></div>
+    </div>
+
+    <div class="card">
+      <h2>访问流水（最近 100 条）</h2>
+      <div id="logBox"></div>
+    </div>
+  </div>
+</main>
+
+<!-- 对话查看弹窗 -->
+<div class="modal" id="chatModal" style="display:none">
+  <div class="modal-card">
+    <div class="modal-h">
+      <h2 id="chatTitle">对话记录</h2>
+      <button class="btn" onclick="closeChat()">关闭</button>
+    </div>
+    <div class="modal-body" id="chatBox"></div>
+  </div>
+</div>
+
+<script>
+const KEY = () => localStorage.getItem('refract_admin_key') || '';
+function authHeaders(){ return { 'x-admin-key': KEY() }; }
+
+function showLogin(){ document.getElementById('loginBox').style.display='block'; document.getElementById('panel').style.display='none'; }
+function showPanel(){ document.getElementById('loginBox').style.display='none'; document.getElementById('panel').style.display='block'; }
+
+document.getElementById('loginBtn').onclick = async () => {
+  const pwd = document.getElementById('adminPwd').value.trim();
+  if (!pwd) return;
+  localStorage.setItem('refract_admin_key', pwd);
+  const err = document.getElementById('loginErr');
+  err.style.display = 'none';
+  try {
+    await loadUsers();
+    showPanel();
+  } catch (e) {
+    localStorage.removeItem('refract_admin_key');
+    err.textContent = '登录失败：' + e.message;
+    err.style.display = 'block';
+  }
+};
+document.getElementById('adminPwd').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('loginBtn').click(); });
+
+async function loadUsers() {
+  const r = await fetch('/api/admin/users', { headers: authHeaders() });
+  if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+  const { users } = await r.json();
+  const box = document.getElementById('usersBox');
+  if (!users.length) { box.innerHTML = '<div class="empty">还没有任何访问记录</div>'; return; }
+  box.innerHTML = `<table><tr><th>IP</th><th>状态</th><th>对话</th><th>视频</th><th>文章</th><th>首次/最近访问</th><th>操作</th></tr>` +
+    users.map(u => `
+      <tr data-sid="${u.session_id}">
+        <td class="mono">${u.ip}</td>
+        <td>${u.unlimited ? '<span class="tag unlimit">不限</span>' : '<span class="tag limit">受限</span>'}</td>
+        <td>${u.used.chat}/${u.limits.chat}</td>
+        <td>${u.used.video}/${u.limits.video}</td>
+        <td>${u.used.article}/${u.limits.article}</td>
+        <td class="muted">${u.first_seen}<br>${u.last_seen}</td>
+        <td>
+          <button class="btn" onclick="resetUser('${u.session_id}')">重置</button>
+          <button class="btn" onclick="toggleUnlimit('${u.session_id}', ${!u.unlimited})">${u.unlimited ? '取消不限' : '设不限'}</button>
+        </td>
+      </tr>`).join('') + '</table>';
+}
+
+async function viewTurn(taskId) {
+  const box = document.getElementById('chatBox');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  document.getElementById('chatModal').style.display = 'flex';
+  document.getElementById('chatTitle').textContent = '对话记录';
+  try {
+    const r = await fetch(`/api/admin/turn/${taskId}`, { headers: authHeaders() });
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const d = await r.json();
+    box.innerHTML = `
+      <div class="qa">
+        <div class="qa-q"><b>问</b><p>${esc(d.q || '（空）')}</p></div>
+        <div class="qa-a"><b>答</b><p>${esc(d.a || '（无回答）')}</p></div>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="color:#c0392b">${esc(e.message)}</div>`;
+  }
+}
+
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function closeChat() { document.getElementById('chatModal').style.display = 'none'; }
+
+async function resetUser(sid) {
+  if (!confirm('确定重置这个用户的配额？')) return;
+  await fetch('/api/admin/reset', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sid }) });
+  await loadUsers();
+}
+async function toggleUnlimit(sid, flag) {
+  await fetch('/api/admin/unlimited', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sid, unlimited: flag }) });
+  await loadUsers();
+}
+
+async function loadLog() {
+  const r = await fetch('/api/admin/log?limit=100', { headers: authHeaders() });
+  if (!r.ok) return;
+  const { log } = await r.json();
+  const box = document.getElementById('logBox');
+  if (!log.length) { box.innerHTML = '<div class="empty">暂无流水</div>'; return; }
+  box.innerHTML = `<table><tr><th>时间</th><th>IP</th><th>动作</th><th>产物</th></tr>` +
+    log.map(l => {
+      let artCell = '<span class="muted">—</span>';
+      if (l.action === 'chat' && l.artifact) {
+        artCell = `<a href="javascript:viewTurn('${l.artifact}')" class="mono">查看对话</a>`;
+      } else if (l.artifact) {
+        artCell = `<a href="${l.artifact}" target="_blank" class="mono">${l.artifact}</a>`;
+      }
+      return `<tr>
+        <td class="mono">${l.ts}</td>
+        <td class="mono">${l.ip}</td>
+        <td><span class="tag">${l.label}</span></td>
+        <td>${artCell}</td>
+      </tr>`;
+    }).join('') + '</table>';
+}
+
+document.getElementById('refreshBtn').onclick = async () => { await loadUsers(); await loadLog(); };
+
+// 已登录则直接进
+if (KEY()) {
+  loadUsers().then(() => { showPanel(); loadLog(); }).catch(showLogin);
+} else {
+  showLogin();
+}
+</script>
+</body>
+</html>

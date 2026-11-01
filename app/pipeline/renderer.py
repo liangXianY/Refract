@@ -500,10 +500,12 @@ def render_artifact(brief: ContentBrief, body: str, artifact_id: str, meta_line:
 
 
 def save_artifact(brief: ContentBrief, body: str, artifact_id: str, data_dir: Path, meta_line: str) -> Path:
+    from .textutil import clean_text
+
     out_dir = data_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{artifact_id}.html"
-    path.write_text(render_artifact(brief, body, artifact_id, meta_line), encoding="utf-8")
+    path.write_text(clean_text(render_artifact(brief, body, artifact_id, meta_line)), encoding="utf-8")
     return path
 
 
@@ -582,8 +584,10 @@ def render_article_page(brief: ContentBrief, body: str, meta_line: str) -> str:
 
 def save_article(brief: ContentBrief, body: str, artifact_id: str, data_dir: Path, meta_line: str) -> Path:
     """文章阅读页，存 artifacts/{id}.html。动画产物走 /v/{id}，别再混。"""
+    from .textutil import clean_text
+
     out_dir = data_dir / "artifacts"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{artifact_id}.html"
-    path.write_text(render_article_page(brief, body, meta_line), encoding="utf-8")
+    path.write_text(clean_text(render_article_page(brief, body, meta_line)), encoding="utf-8")
     return path

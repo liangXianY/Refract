@@ -78,13 +78,15 @@ async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 900
     try { detail = (await resp.json()).detail || detail; } catch { /* 保持原样 */ }
     throw new Error(detail);
   }
-  const { task_id } = await resp.json();
+  const { task_id, session_id } = await resp.json();
+  if (session_id) localStorage.setItem('refract_sid', session_id);
 
   return new Promise((resolve, reject) => {
     const es = new EventSource(`/api/tasks/${task_id}/events`);
     // 看门狗：timeoutMs 内没有任何事件就判卡死。默认 90s；
     // 视频成片要等 Opus 写 3-5 分钟代码，调用方得显式放宽
     let lastBeat = Date.now();
+    let aborted = false;
     const watchdog = setInterval(() => {
       if (Date.now() - lastBeat > timeoutMs) {
         clearInterval(watchdog);
@@ -102,10 +104,21 @@ async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 900
       if (ev.type === 'error') finish(reject, new Error(ev.message));
     };
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) finish(reject, new Error('连接中断'));
+      if (es.readyState === EventSource.CLOSED && !aborted) finish(reject, new Error('连接中断'));
+    };
+    // 注册当前任务的中止函数，供暂停按钮调用
+    currentAbort = () => {
+      aborted = true;
+      clearInterval(watchdog);
+      es.close();
+      const err = new Error('已暂停');
+      err.paused = true;
+      reject(err);
     };
   });
 }
+
+let currentAbort = null;  // 当前对话任务的中止函数（暂停用）
 
 /* ============================ 模式切换 ============================ */
 
@@ -144,11 +157,18 @@ let chatting = false;
 
 function toolCard(flow, title, tool) {
   const el = document.createElement('div');
-  el.className = 'tcard';
+  el.className = 'tcard folded';
   el.innerHTML = `<span class="tstat run"></span><span class="ttitle">${esc(title)}</span>
     <span class="ttool">${esc(tool)}</span><span class="ttime"></span>
+    <span class="tcaret"></span>
     <div class="tdetail"></div>`;
+  // 整张卡片头部都可点击展开/收起（点标题、点箭头、点空白都行）
+  const header = el.querySelector('.ttitle');
+  const toggle = () => el.classList.toggle('folded');
+  header.onclick = toggle;
+  el.querySelector('.tcaret').onclick = toggle;
   flow.appendChild(el);
+  flow.hidden = false;  // 有工具了，任务列表该露出来了
   chatlog.scrollTop = chatlog.scrollHeight;
   return el;
 }
@@ -162,12 +182,13 @@ function miniLine(flow, label, text, cls = '') {
   return el;
 }
 
-function planCard(flow, steps) {
+function planCard(planBox, steps) {
   const el = document.createElement('div');
   el.className = 'plancard';
   el.innerHTML = `<div class="pc-h">执行计划 · ${steps.length} 步</div>` +
     steps.map((s, i) => `<div class="pc-s" data-i="${i}"><b>${i + 1}</b><span>${esc(s.title || s.tool)}</span><em>${esc(s.why || '')}</em></div>`).join('');
-  flow.appendChild(el);
+  planBox.appendChild(el);
+  planBox.hidden = false;
   chatlog.scrollTop = chatlog.scrollHeight;
   return el;
 }
@@ -216,138 +237,203 @@ async function playInChat(flow, plan, btn) {
   }
 }
 
-async function sendChat(text) {
-  text = (text || '').trim();
-  if (!text || chatting) return;
-  chatting = true;
-  $('chatSend').disabled = true;
-  $('chatInput').value = '';
-  autosize($('chatInput'));
-
-  addMsg('user', esc(text).replace(/\n/g, '<br/>'));
-
-  // 正文在上，过程卡在下方——阅读顺序应该先看到内容
-  const body = addMsg('ai', `<div class="md" data-md style="font-size:13.5px" hidden></div>
-    <div class="flow" data-flow></div>`);
+// 建一轮「AI 消息」的渲染环境，返回事件处理器。实时和重放共用同一套渲染逻辑。
+function makeTurn() {
+  const body = addMsg('ai', `<div class="planbox" data-plan hidden></div>
+    <div class="thinking" data-thinking hidden><span class="tdot"></span>思考中…</div>
+    <div class="md" data-md style="font-size:13.5px" hidden></div>
+    <div class="flow" data-flow hidden></div>`);
   const flow = body.querySelector('[data-flow]');
   const mdBox = body.querySelector('[data-md]');
+  const planBox = body.querySelector('[data-plan]');
+  const thinkBox = body.querySelector('[data-thinking]');
 
   let raw = '';
   let pending = false;
-  let settled = false;   // 收尾后，排队的 rAF 不许再把带光标的版本写回去
+  let settled = false;  // 收尾后，排队的 rAF 不许再把带光标的版本写回去
+  let activeCard = null;
+  let reasoning = false;  // 是否正在思考（推理模型先吐 reasoning 再吐正文）
+
   const flush = (withCursor) => {
     if (pending) return;
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
-      if (settled && withCursor) return;   // 竞态防护：收尾后的延迟刷新直接丢弃
+      if (settled && withCursor) return;  // 竞态防护：收尾后的延迟刷新直接丢弃
       mdBox.hidden = false;
-      mdBox.innerHTML = renderMd(raw, withCursor && !settled);
+      mdBox.innerHTML = renderMd(raw, withCursor);
       chatlog.scrollTop = chatlog.scrollHeight;
     });
   };
 
-  let activeCard = null;
-  const cardFor = (i, tool, title) => {
-    if (activeCard && +activeCard.dataset.i === i) return activeCard;
-    activeCard = toolCard(flow, title || tool, tool);
-    activeCard.dataset.i = i;
-    return activeCard;
+  const handle = (ev) => {
+    switch (ev.type) {
+      case 'plan':
+        if (ev.steps && ev.steps.length) planCard(planBox, ev.steps);
+        break;
+      case 'step_start':
+        activeCard = toolCard(flow, ev.title, ev.tool);
+        activeCard.dataset.i = ev.i;
+        break;
+      case 'tool_detail': {
+        const box = activeCard || flow.lastElementChild;
+        const det = box?.querySelector('.tdetail');
+        if (det) det.innerHTML = (ev.lines || []).map(l => `<div>${esc(l)}</div>`).join('');
+        break;
+      }
+      case 'step_end': {
+        // 查找对应卡片：优先按 data-i，找不到退回 activeCard，再退回最后一个 tcard
+        let card = flow.querySelector(`.tcard[data-i="${ev.i}"]`) || activeCard;
+        if (!card) card = flow.querySelector('.tcard:last-of-type');
+        if (card) {
+          card.querySelector('.tstat').className = `tstat ${ev.status === 'ok' ? 'ok' : 'err'}`;
+          card.querySelector('.ttime').textContent = ev.status === 'ok'
+            ? `${((ev.elapsed_ms || 0) / 1000).toFixed(1)}s` : '失败';
+          if (ev.summary) {
+            const det = card.querySelector('.tdetail');
+            const line = document.createElement('div');
+            line.textContent = ev.summary;
+            det.appendChild(line);
+          }
+        }
+        break;
+      }
+      case 'stage':
+        miniLine(flow, ev.stage.toUpperCase(), ev.label, ev.stage === 'reflect' ? 'hl' : '');
+        break;
+      case 'reflection':
+        miniLine(flow, `第 ${ev.reflection.round} 轮自检`, `${ev.reflection.total} 分 · ${ev.reflection.repair_action.toUpperCase()}`, 'hl');
+        break;
+      case 'delta':
+        if (ev.kind === 'reasoning') {
+          // 推理模型的思考过程：显示「思考中」，让用户知道没卡住
+          reasoning = true;
+          thinkBox.hidden = false;
+        } else if (ev.kind === 'content') {
+          // 正文来了：隐藏「思考中」，开始流式正文
+          if (reasoning) { reasoning = false; thinkBox.hidden = true; }
+          raw += ev.text;
+          flush(true);
+        }
+        break;
+      case 'artifact':
+        if (ev.artifact === 'article') {
+          const art = document.createElement('div');
+          art.className = 'artifact';
+          art.innerHTML = `<div class="ai-ico">文</div>
+            <div class="ai-tx"><b>文章产物页</b><span>${esc(ev.summary || '')}</span></div>
+            <div class="ai-links"><a href="${ev.url}" target="_blank" rel="noopener">打开</a>
+            <a href="/api/articles/${ev.url.split('/').pop()}/md" download>下载 .md</a></div>`;
+          flow.appendChild(art);
+        }
+        break;
+      case 'video_plans':
+        plansCards(flow, ev.plans || []);
+        break;
+      case 'done_reply':
+        break;
+      case 'error':
+        mdBox.hidden = false;
+        mdBox.innerHTML = `<p style="color:var(--err)">${esc(ev.message)}</p>`;
+        break;
+    }
   };
 
-  try {
-    $('chatHint').textContent = '主 Agent 规划中…';
-    await runTask(
-      { input: text },
-      (ev) => {
-        switch (ev.type) {
-          case 'plan':
-            if (ev.steps.length) planCard(flow, ev.steps);
-            $('chatHint').textContent = `执行 ${ev.steps.length} 步`;
-            break;
-          case 'step_start':
-            activeCard = toolCard(flow, ev.title, ev.tool);
-            activeCard.dataset.i = ev.i;
-            $('chatHint').textContent = `${ev.title}…`;
-            break;
-          case 'tool_detail': {
-            const box = (activeCard || flow.lastElementChild);
-            const det = box?.querySelector('.tdetail');
-            if (det) det.innerHTML = (ev.lines || []).map(l => `<div>${esc(l)}</div>`).join('');
-            chatlog.scrollTop = chatlog.scrollHeight;
-            break;
-          }
-          case 'step_end': {
-            const card = flow.querySelector(`.tcard[data-i="${ev.i}"]`) || activeCard;
-            if (card) {
-              card.querySelector('.tstat').className = `tstat ${ev.status === 'ok' ? 'ok' : 'err'}`;
-              card.querySelector('.ttime').textContent = ev.status === 'ok'
-                ? `${((ev.elapsed_ms || 0) / 1000).toFixed(1)}s`
-                : '失败';
-              if (ev.summary) {
-                const det = card.querySelector('.tdetail');
-                const line = document.createElement('div');
-                line.textContent = ev.summary;
-                det.appendChild(line);
-              }
-            }
-            break;
-          }
-          case 'stage':
-            // write_article 内部的阶段：plan/compose/reflect/render
-            miniLine(flow, ev.stage.toUpperCase(), ev.label, ev.stage === 'reflect' ? 'hl' : '');
-            $('chatHint').textContent = ev.label;
-            break;
-          case 'reflection':
-            miniLine(flow, `第 ${ev.reflection.round} 轮自检`, `${ev.reflection.total} 分 · ${ev.reflection.repair_action.toUpperCase()}`, 'hl');
-            $('chatHint').textContent = `第 ${ev.reflection.round} 轮 ${ev.reflection.total} 分`;
-            break;
-          case 'delta':
-            if (ev.kind === 'content') { raw += ev.text; flush(true); }
-            break;
-          case 'artifact':
-            if (ev.artifact === 'article') {
-              const art = document.createElement('div');
-              art.className = 'artifact';
-              art.innerHTML = `<div class="ai-ico">文</div>
-                <div class="ai-tx"><b>文章产物页</b><span>${esc(ev.summary || '')}</span></div>
-                <div class="ai-links"><a href="${ev.url}" target="_blank" rel="noopener">打开</a>
-                <a href="/api/articles/${ev.url.split('/').pop()}/md" download>下载 .md</a></div>`;
-              flow.appendChild(art);
-              chatlog.scrollTop = chatlog.scrollHeight;
-            }
-            break;
-          case 'video_plans':
-            plansCards(flow, ev.plans || []);
-            $('chatHint').textContent = '挑一套拍法';
-            break;
-          case 'done_reply':
-            break;
-          case 'error':
-            mdBox.hidden = false;
-            mdBox.innerHTML = `<p style="color:var(--err)">${esc(ev.message)}</p>`;
-            break;
-        }
-      },
-      '/api/chat'
-    );
-    settled = true;
+  const finish = () => {
+    settled = true;  // 收尾：后续排队的 rAF 不再写带光标版本
+    thinkBox.hidden = true;  // 思考框收尾必隐藏
     if (raw) { mdBox.hidden = false; mdBox.innerHTML = renderMd(raw, false); }
     if (!flow.children.length && !raw) {
       mdBox.hidden = false;
       mdBox.innerHTML = '<p class="ph">（无内容返回）</p>';
     }
+    if (!flow.children.length) flow.hidden = true;
+    // 还停在「进行中」转圈的卡片，收尾时统一标记为完成（历史重放/暂停场景）
+    flow.querySelectorAll('.tcard .tstat.run').forEach(s => { s.className = 'tstat ok'; });
+  };
+
+  return { flow, mdBox, planBox, handle, finish };
+}
+
+async function sendChat(text) {
+  text = (text || '').trim();
+  if (!text || chatting) return;
+  chatting = true;
+  setSendState('running');
+  $('chatInput').value = '';
+  autosize($('chatInput'));
+
+  addMsg('user', esc(text).replace(/\n/g, '<br/>'));
+  const turn = makeTurn();
+
+  try {
+    $('chatHint').textContent = '主 Agent 规划中…';
+    await runTask(
+      { input: text, session_id: localStorage.getItem('refract_sid') || '' },
+      (ev) => { turn.handle(ev); if (ev.type === 'plan') $('chatHint').textContent = `执行 ${ev.steps.length} 步`; },
+      '/api/chat'
+    );
+    turn.finish();
     $('chatHint').textContent = '主 Agent 待命';
   } catch (e) {
-    settled = true;
-    mdBox.hidden = false;
-    if (raw) mdBox.innerHTML = renderMd(raw, false);   // 收到多少显示多少，光标必须摘掉
-    else mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
-    $('chatHint').textContent = '出错了：' + e.message;
+    if (e.paused) {
+      // 用户主动暂停：保留已收到的内容，不报错
+      turn.finish();
+      $('chatHint').textContent = '已暂停';
+    } else {
+      turn.mdBox.hidden = false;
+      turn.mdBox.innerHTML = `<p style="color:var(--err)">${esc(e.message)}</p>`;
+      $('chatHint').textContent = '出错了：' + e.message;
+    }
   } finally {
     chatting = false;
-    $('chatSend').disabled = false;
+    currentAbort = null;
+    setSendState('idle');
   }
+}
+
+// 发送按钮三态：idle / running / done
+function setSendState(state) {
+  const btn = $('chatSend');
+  btn.classList.remove('idle', 'running');
+  btn.classList.add(state);
+  if (state === 'running') {
+    btn.title = '暂停';
+    btn.disabled = false;  // 进行中可点击 → 暂停
+  } else {
+    btn.title = '发送';
+    btn.disabled = false;
+  }
+}
+
+// 发送按钮点击：空闲→发送；进行中→暂停
+$('chatSend').onclick = () => {
+  if (chatting) {
+    if (currentAbort) { currentAbort(); currentAbort = null; }
+  } else {
+    sendChat($('chatInput').value);
+  }
+};
+
+// 刷新时按 session_id 拉历史，逐轮重放
+async function loadHistory() {
+  const sid = localStorage.getItem('refract_sid');
+  if (!sid) return;
+  try {
+    const r = await fetch(`/api/session/${sid}`);
+    if (!r.ok) return;
+    const { messages } = await r.json();
+    if (!messages || !messages.length) return;
+    for (const m of messages) {
+      if (m.role === 'user') {
+        addMsg('user', esc(m.text).replace(/\n/g, '<br/>'));
+      } else {
+        const turn = makeTurn();
+        for (const ev of m.events || []) turn.handle(ev);
+        turn.finish();
+      }
+    }
+  } catch { /* 拉不到历史就算了，不阻塞 */ }
 }
 
 function autosize(el) {
@@ -359,7 +445,6 @@ $('chatInput').addEventListener('input', (e) => autosize(e.target));
 $('chatInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(e.target.value); }
 });
-$('chatSend').onclick = () => sendChat($('chatInput').value);
 document.querySelectorAll('.ce-tips button').forEach(b => {
   b.onclick = () => { $('chatInput').value = b.dataset.tip; autosize($('chatInput')); $('chatInput').focus(); };
 });
@@ -554,6 +639,45 @@ $('ghLoad').onclick = async () => {
   }
 };
 
+/* ---- 平台热榜（小红书/微博/知乎/抖音）----
+   60s API，免费聚合接口。和 GitHub 一样点了才请求，不自动打。
+   选中某条 → 填进输入框 → 点「生成文章」即成稿。 */
+let hotSource = 'rednote';
+
+function renderHot(items) {
+  $('hotList').innerHTML = items.map(i => `
+    <button class="titem" data-obj="${esc(i.title)}">
+      <b>${esc(i.title)}</b>
+      <span>${esc(i.score || '热度 ' + (i.rank || ''))}</span>
+    </button>`).join('');
+  document.querySelectorAll('#hotList .titem').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('#hotList .titem').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      $('artInput').value = `结合「${b.dataset.obj}」这个热点写一篇，平台小红书风格`;
+      autosize($('artInput'));
+      $('artHint').textContent = '已选中热点，点「生成文章」';
+    };
+  });
+}
+
+async function loadHot(source) {
+  hotSource = source;
+  document.querySelectorAll('.hot-tab').forEach(t => t.classList.toggle('on', t.dataset.s === source));
+  $('hotList').innerHTML = '<p class="ph">拉取中…</p>';
+  try {
+    const d = await (await fetch(`/api/hot/${source}?limit=10`)).json();
+    if (d.detail) throw new Error(d.detail);
+    renderHot(d.items);
+  } catch (e) {
+    $('hotList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
+  }
+}
+
+document.querySelectorAll('.hot-tab').forEach(t => {
+  t.onclick = () => loadHot(t.dataset.s);
+});
+
 /* ============================ 视频 ============================ */
 
 /* 流程按 xilo-opus-video 的方法论：
@@ -586,7 +710,7 @@ async function makePlans() {
   vidBusy = true;
   $('vidPlan').disabled = true;
   $('vidPlan').textContent = '正在想方案…';
-  $('vidHint').textContent = '分析内容特征，给出三套不同的拍法';
+  $('vidHint').textContent = '分析内容特征，给出三套不同拍法 + 一套 Opus 原创';
   $('planList').innerHTML = `
     <div class="tcard"><span class="tstat run"></span><span class="ttitle">分析内容特征</span>
       <span class="ttool">deepseek</span><span class="ttime"></span>
@@ -614,7 +738,7 @@ async function makePlans() {
     vidPlans = data.plans;
     vidBrief = data.brief;
     renderPlans(data.plans, data.brief);
-    $('vidHint').textContent = `三套方案 · ${data.model}${data.mocked ? ' · mock' : ''}`;
+    $('vidHint').textContent = `${data.plans.length} 套方案 · ${data.model}${data.mocked ? ' · mock' : ''}`;
   } catch (e) {
     $('planList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
     $('vidHint').textContent = '失败：' + e.message;
@@ -683,6 +807,40 @@ function drawKeyframe(canvas, p) {
   ctx.globalAlpha = 1;
 }
 
+/* 等待生成时，把 4 套方案铺在下方空白区：默认收起，点开看详情、再点收起。
+   生成的这版不带「用这套拍」按钮（正在生成），纯展示 + 折叠。 */
+function compactPlans(plans, activeIdx) {
+  const cards = plans.map((p, i) => `
+    <article class="plan folded${i === activeIdx ? ' active' : ''}" data-i="${i}">
+      <header class="ptoggle" data-i="${i}" role="button" tabindex="0">
+        <span class="pid">${esc(p.id)}</span>
+        <h4>${esc(p.name)}${i === activeIdx ? ' <span class="curtag">生成中</span>' : ''}</h4>
+        <span class="ptag">${esc(p.style)} · ${p.duration}s</span>
+        <span class="pcaret" aria-hidden="true"></span>
+      </header>
+      <div class="pbody">
+        <canvas class="kf" width="300" height="84" data-p='${esc(JSON.stringify({style: p.style, palette: p.palette, name: p.name, duration: p.duration, beats: (p.beats||[]).length}))}'></canvas>
+        <p class="pc">${esc(p.concept)}</p>
+        <p class="pw"><em>为什么</em>${esc(p.why)}</p>
+        <p class="pm"><em>运动</em>${esc(p.motion)}</p>
+        <ol class="pbeats">${(p.beats || []).map(b => `<li>${esc(b)}</li>`).join('')}</ol>
+        <div class="pfoot">
+          <div class="swatches">${(p.palette || []).map(c => `<i style="background:${esc(c)}"></i>`).join('')}</div>
+        </div>
+      </div>
+    </article>`).join('');
+  const title = `<div class="wp-h">这轮出的 ${plans.length} 套方案（点开看详情，再点收起）</div>`;
+  const wrap = `<div class="plangrid">${cards}</div>`;
+  const html = title + wrap;
+  // 关键帧预览
+  const box = document.createElement('div');
+  box.innerHTML = html;
+  box.querySelectorAll('canvas.kf').forEach(c => {
+    try { drawKeyframe(c, JSON.parse(c.dataset.p)); } catch { /* 忽略 */ }
+  });
+  return box.innerHTML;
+}
+
 function renderPlans(plans, brief) {
   const head = `
     <div class="planhead">
@@ -692,28 +850,39 @@ function renderPlans(plans, brief) {
 
   const cards = plans.map((p, i) => `
     <article class="plan" data-i="${i}">
-      <header>
+      <header class="ptoggle" data-i="${i}" role="button" tabindex="0">
         <span class="pid">${esc(p.id)}</span>
         <h4>${esc(p.name)}</h4>
         <span class="ptag">${esc(p.style)} · ${p.duration}s</span>
+        <span class="pcaret" aria-hidden="true"></span>
       </header>
-      <canvas class="kf" width="300" height="84" data-p='${esc(JSON.stringify({style: p.style, palette: p.palette, name: p.name, duration: p.duration, beats: (p.beats||[]).length}))}'></canvas>
-      <p class="pc">${esc(p.concept)}</p>
-      <p class="pw"><em>为什么</em>${esc(p.why)}</p>
-      <p class="pm"><em>运动</em>${esc(p.motion)}</p>
-      <ol class="pbeats">${(p.beats || []).map(b => `<li>${esc(b)}</li>`).join('')}</ol>
-      <div class="pfoot">
-        <div class="swatches">${(p.palette || []).map(c => `<i style="background:${esc(c)}"></i>`).join('')}</div>
-        <button class="go" data-i="${i}">用这套拍</button>
+      <div class="pbody">
+        <canvas class="kf" width="300" height="84" data-p='${esc(JSON.stringify({style: p.style, palette: p.palette, name: p.name, duration: p.duration, beats: (p.beats||[]).length}))}'></canvas>
+        <p class="pc">${esc(p.concept)}</p>
+        <p class="pw"><em>为什么</em>${esc(p.why)}</p>
+        <p class="pm"><em>运动</em>${esc(p.motion)}</p>
+        <ol class="pbeats">${(p.beats || []).map(b => `<li>${esc(b)}</li>`).join('')}</ol>
+        <div class="pfoot">
+          <div class="swatches">${(p.palette || []).map(c => `<i style="background:${esc(c)}"></i>`).join('')}</div>
+          <button class="go" data-i="${i}">用这套拍</button>
+        </div>
       </div>
     </article>`).join('');
 
   $('planList').innerHTML = head + `<div class="plangrid">${cards}</div>`;
+  // 关键帧预览
   document.querySelectorAll('.plan canvas.kf').forEach(c => {
     try { drawKeyframe(c, JSON.parse(c.dataset.p)); } catch { /* 预览失败不影响选择 */ }
   });
   document.querySelectorAll('.plan .go').forEach(b => {
     b.onclick = () => renderVideo(+b.dataset.i);
+  });
+  // 点标题折叠/展开方案详情
+  document.querySelectorAll('.plan .ptoggle').forEach(h => {
+    h.onclick = () => {
+      const card = h.closest('.plan');
+      card.classList.toggle('folded');
+    };
   });
 }
 
@@ -729,7 +898,7 @@ async function renderVideo(idx) {
   const t0 = Date.now();
   $('playerBox').innerHTML = `
     <div class="vflow">
-      <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出三套方案</span><span class="ttool">deepseek</span><span class="ttime">✓</span></div>
+      <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出四套方案</span><span class="ttool">deepseek + opus</span><span class="ttime">✓</span></div>
       <div class="tcard" id="vStepGen"><span class="tstat run"></span><span class="ttitle">按「${esc(plan.name)}」写动画代码</span>
         <span class="ttool">${esc(plan.style)}</span><span class="ttime" id="vTimer">0s</span>
         <div class="tdetail" id="vGenTx"><div>Opus 逐帧代码生成，通常 5-10 分钟，请耐心等秒数走</div></div></div>
@@ -738,12 +907,17 @@ async function renderVideo(idx) {
         <div class="tdetail"><div>完整性 / 能播 / 有字 / 在动</div></div></div>
     </div>
     <div class="pstage slim"><div class="spin"></div>
-      <span id="pstageTx">生成中…</span></div>`;
+      <span id="pstageTx">生成中…</span></div>
+    <div class="waitplans" id="waitPlans">${compactPlans(vidPlans, idx)}</div>`;
   window.__vTimer = setInterval(() => {
     const el = document.getElementById('vTimer');
     if (el) el.textContent = Math.floor((Date.now() - t0) / 1000) + 's';
   }, 1000);
   $('vidHint').textContent = '生成中…';
+  // 等待区方案卡：可点开看详情、再收起
+  document.querySelectorAll('#waitPlans .plan .ptoggle').forEach(h => {
+    h.onclick = () => h.closest('.plan').classList.toggle('folded');
+  });
 
   try {
     const done = await runTask(
@@ -826,4 +1000,5 @@ $('vidInput').addEventListener('keydown', (e) => {
   }
   if (QS.has('mode')) switchMode(QS.get('mode'));
   loadModels();
+  loadHistory();  // 同一 IP 刷新后恢复历史对话
 })();

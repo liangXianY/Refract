@@ -195,6 +195,9 @@ textarea::placeholder{color:var(--muted)}
 }
 .tdot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex:none}
 .think.busy .tdot{animation:pulse 1.2s infinite}
+.thinking{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--muted);
+  padding:2px 0 10px;letter-spacing:.02em}
+.thinking .tdot{animation:pulse 1.2s infinite}
 @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1.5)}}
 
 /* Brief */
@@ -333,9 +336,23 @@ footer{
 .chatinput button{
   width:32px;height:32px;flex:none;border-radius:50%;border:0;cursor:pointer;
   background:var(--ink);color:#fff;font-size:15px;line-height:1;transition:.18s;
+  display:flex;align-items:center;justify-content:center;position:relative;
 }
 .chatinput button:hover{background:var(--accent)}
 .chatinput button:disabled{opacity:.35;cursor:not-allowed}
+/* 发送按钮三态：idle(发送箭头) / running(转圈，可点暂停) / 完成回 idle */
+.sendbtn svg{display:none}
+.sendbtn .ic-spin{display:none}   /* span 不受上面 svg 规则影响，单独默认隐藏 */
+.sendbtn.idle .ic-send{display:block}
+.sendbtn.running{background:var(--accent)}
+.sendbtn.running .ic-spin{display:block}
+.sendbtn.running .ic-stop{display:none}
+.sendbtn.running:hover .ic-spin{display:none}
+.sendbtn.running:hover .ic-stop{display:block}
+.sendbtn .ic-spin{
+  width:15px;height:15px;border:2px solid rgba(255,255,255,.35);
+  border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;
+}
 
 .chatmeta{display:flex;justify-content:space-between;padding:8px 4px 0;
   font-size:10.5px;color:var(--dim);letter-spacing:.02em}
@@ -399,6 +416,17 @@ footer{
 }
 .plan:hover{border-color:#cfcfc8;box-shadow:0 4px 18px rgba(0,0,0,.05)}
 .plan header{display:flex;align-items:center;gap:8px}
+.plan .ptoggle{cursor:pointer;user-select:none}
+.plan .ptoggle:hover h4{color:var(--accent)}
+.plan .pcaret{
+  width:0;height:0;flex:none;border-left:4px solid transparent;border-right:4px solid transparent;
+  border-top:6px solid var(--dim);transition:transform .18s;
+}
+.plan.folded .pcaret{transform:rotate(-90deg)}
+.plan .pbody{display:flex;flex-direction:column;gap:9px}
+.plan.folded .pbody{display:none}
+.plan .curtag{font-size:9.5px;font-weight:600;color:var(--accent);vertical-align:1px}
+.plan.active{border-color:var(--accent)}
 .plan .pid{
   width:20px;height:20px;border-radius:5px;display:grid;place-items:center;flex:none;
   background:var(--ink);color:#fff;font-family:var(--mono);font-size:10px;font-weight:700;
@@ -439,6 +467,13 @@ footer{
 /* ---------- GitHub 热点选题 ---------- */
 .trending{margin-top:18px}
 .tlist{margin-top:8px;display:flex;flex-direction:column;gap:5px;max-height:220px;overflow:auto}
+.hot-tabs{display:flex;gap:5px;flex-wrap:wrap}
+.hot-tab{
+  padding:4px 11px;border-radius:6px;border:1px solid var(--line);background:#fff;
+  font-size:11px;font-family:inherit;color:var(--muted);cursor:pointer;transition:.15s;
+}
+.hot-tab:hover{color:var(--ink);border-color:#cfcfc8}
+.hot-tab.on{border-color:var(--accent);background:var(--accent-soft);color:var(--accent);font-weight:600}
 .titem{
   text-align:left;border:1px solid var(--line);border-radius:8px;background:#fff;
   padding:7px 10px;cursor:pointer;font-family:inherit;transition:.15s;display:block;width:100%;
@@ -453,16 +488,34 @@ footer{
 
 /* ---------- 对话：主 Agent 执行流 ---------- */
 .flow{display:flex;flex-direction:column;gap:7px;margin-bottom:8px}
+.planbox{margin-bottom:10px}
 .tcard{
   border:1px solid var(--line);border-radius:9px;background:#fff;padding:8px 11px;
-  display:grid;grid-template-columns:auto 1fr auto auto;gap:4px 9px;align-items:center;
+  display:grid;grid-template-columns:auto 1fr auto auto auto;gap:4px 9px;align-items:center;
   animation:fadeUp .25s ease both;
 }
-.tstat{width:8px;height:8px;border-radius:50%;background:var(--dim);grid-row:1}
+/* 工具卡头部整行可点展开/收起 */
+.tcard .ttitle{cursor:pointer;user-select:none}
+.tcard .ttitle:hover{color:var(--accent)}
+.tcard .tcaret{
+  width:8px;height:8px;flex:none;cursor:pointer;
+  border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);
+  transform:rotate(45deg);            /* 展开态：朝下 ▼ */
+  transition:transform .16s;
+}
+.tcard.folded .tcaret{transform:rotate(-45deg)}  /* 收起态：朝右 ▶ */
+.tcard.folded .tdetail{display:none}
+
+/* 状态点三态：进行中(转圈) / 待办(空心灰) / 完成(绿勾) / 失败(红) */
+.tstat{width:9px;height:9px;border-radius:50%;background:var(--line);grid-row:1;flex:none}
 .tstat.run{background:transparent;border:2px solid var(--accent);border-top-color:transparent;
-  width:10px;height:10px;animation:spin .8s linear infinite}
-.tstat.ok{background:var(--ok)}
+  width:11px;height:11px;animation:spin .8s linear infinite}
+.tstat.ok{background:var(--ok);position:relative}
+.tstat.ok::after{content:"";position:absolute;left:2px;top:1px;width:3px;height:6px;
+  border-right:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(45deg)}
 .tstat.err{background:var(--err)}
+.tstat.wait{background:var(--line)}
+/* 完成的卡片整体给一点「已完成」的确认感：标题色不变，状态点绿点已够明显 */
 .ttitle{font-size:12px;font-weight:600;color:var(--ink)}
 .ttool{font-family:var(--mono);font-size:9.5px;color:var(--dim)}
 .ttime{font-family:var(--mono);font-size:9.5px;color:var(--muted);justify-self:end}
@@ -519,9 +572,15 @@ footer{
 .vflow{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}
 .tcard.done{opacity:.75}
 .tcard.wait{opacity:.55}
-.tstat:empty{width:8px;height:8px;border-radius:50%;background:var(--line)}
 .pstage.slim{min-height:120px;gap:10px}
 .pstage.slim span{font-size:12px;color:var(--muted);font-family:var(--mono)}
+/* 等待生成时，铺在下方空白区的方案列表 */
+.waitplans{margin-top:4px;border-top:1px solid var(--line2);padding-top:14px;
+  overflow-y:auto;min-height:0;flex:1}
+.waitplans .wp-h{font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--dim);margin-bottom:10px}
+.waitplans .plangrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(248px,1fr));gap:12px}
+.waitplans .plan{padding:10px 12px;gap:0}
 .vframe{margin-top:12px}
 .vframe iframe{width:100%;aspect-ratio:16/9;border:1px solid var(--line);border-radius:10px;background:#000;display:block}
 

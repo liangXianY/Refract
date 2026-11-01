@@ -25,10 +25,12 @@ def _dir(data_dir: Path) -> Path:
 
 
 def save(data_dir: Path, record: dict) -> Path:
+    from .textutil import clean_text
+
     task_id = record.get("task_id") or "unknown"
     record.setdefault("finished_at", datetime.now().isoformat(timespec="seconds"))
     path = _dir(data_dir) / f"{task_id}.json"
-    path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(clean_text(json.dumps(record, ensure_ascii=False, indent=2)), encoding="utf-8")
     return path
 
 
