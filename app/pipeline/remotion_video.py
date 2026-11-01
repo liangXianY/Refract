@@ -47,14 +47,16 @@ MAPPING_SYSTEM = """你是宣传片分镜师，为一条产品介绍短片做「
 
 硬规则：
 - 卡名必须从索引里原样选，不许自创；同一张卡全片只当一次主角
-- 每个镜头 1.5~6 秒，全部镜头时长之和约等于给定总时长（±20%）
+- 每个镜头 3~7 秒（文字越多的镜头给越长），全部镜头时长之和约等于给定总时长（±20%）。
+  **文字可读性优先**：screen_text 里的字，按「1 秒读 2-3 个字」估算停留时长，
+  字没读完就转场是硬伤——宁可镜头少一点、每个镜头长一点，也不要赶节奏。
 - screen_text 是这一镜屏幕上出现的短文字（≤20 字，从简报要点里提炼，禁止编造数据）
 - sfx 是该镜头内的音效表：t 为镜头内秒数，type 只能是
   pop(登场)/whoosh(转场移动)/hit(强调)/chord(收尾)/sparkle(点缀)/riser(蓄势)，
   每镜 1~3 个，别滥用；镜头衔接处前一镜末尾或后一镜开头给一个 whoosh
 - 最后一个镜头用 outro 类卡收尾落定
 
-只输出 JSON：{"shots": [{"card": "卡名", "category": "类别", "duration_s": 3.5,
+只输出 JSON：{"shots": [{"card": "卡名", "category": "类别", "duration_s": 4.5,
 "narration": "这镜讲什么(20字内)", "screen_text": "屏幕文字",
 "sfx": [{"t": 0.2, "type": "pop"}]}]}"""
 
@@ -163,6 +165,7 @@ PACKAGE_JSON = {
     # 定义有 bug（报 placeholder/onPointerEnterCapture 缺失），4.0.539 实测干净
     "dependencies": {
         "@remotion/cli": "4.0.539",
+        "@remotion/player": "4.0.539",
         "react": "18.3.1",
         "react-dom": "18.3.1",
         "remotion": "4.0.539",
@@ -188,6 +191,36 @@ INDEX_TS = """import { registerRoot } from 'remotion';
 import { RemotionRoot } from './Root';
 
 registerRoot(RemotionRoot);
+"""
+
+# 在线播放入口：用 @remotion/player 渲染干净播放器（自动播放、带控制条），
+# 而不是 Remotion Studio（带时间线/图层的编辑器）。bundle 这个入口，
+# 用户打开网页就是「像看视频一样」的成片，不是剪辑软件。
+PLAYER_TSX = """import React from 'react';
+import { registerRoot } from 'remotion';
+import { Player } from '@remotion/player';
+import { Promo, FPS, TOTAL_FRAMES } from './Root';
+
+const PlayerPage: React.FC = () => (
+  <div style={{
+    width: '100%', height: '100vh', margin: 0, display: 'flex',
+    alignItems: 'center', justifyContent: 'center', background: '#0a0a0a'
+  }}>
+    <Player
+      component={Promo}
+      durationInFrames={TOTAL_FRAMES}
+      compositionWidth={1920}
+      compositionHeight={1080}
+      fps={FPS}
+      controls
+      loop
+      autoPlay
+      style={{ width: '100%', maxWidth: 1280 }}
+    />
+  </div>
+);
+
+registerRoot(PlayerPage);
 """
 
 README_TMPL = """# Refract 宣传片工程（video-shotcraft 式 Remotion 管线产出）
@@ -411,7 +444,7 @@ def _validate_mapping(data: dict, total: float) -> list[Shot]:
         if card_name in used:
             continue
         used.add(card_name)
-        dur = max(1.5, min(6.0, float(raw.get("duration_s") or 3.5)))
+        dur = max(3.0, min(7.0, float(raw.get("duration_s") or 4.5)))
         sfx = [ShotCue(t=max(0.0, min(dur, float(c.get("t") or 0))), type=c.get("type", "pop"))
                for c in (raw.get("sfx") or []) if isinstance(c, dict)]
         meta = known.get(card_name, {})
@@ -547,7 +580,8 @@ const RemotionRoot: React.FC = () => (
   />
 );
 
-export {{ RemotionRoot }};
+export {{ RemotionRoot, Promo, FPS }};
+export const TOTAL_FRAMES = {total};
 """
 
 
@@ -570,6 +604,8 @@ def _assemble(project: Path, shots: list[Shot], sfx_global: list[dict],
     root = _root_tsx(shots, sfx_global, palette[0],
                      palette[1] if len(palette) > 1 else palette[0], bg)
     (project / "src" / "Root.tsx").write_text(root, encoding="utf-8")
+    # 在线播放入口：bundle 这个文件得到干净播放器页（而非 Studio）
+    (project / "src" / "player.tsx").write_text(PLAYER_TSX, encoding="utf-8")
 
     (project / "package.json").write_text(json.dumps(PACKAGE_JSON, ensure_ascii=False, indent=2), encoding="utf-8")
     (project / "tsconfig.json").write_text(json.dumps(TSCONFIG, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -695,14 +731,15 @@ async def bundle_project(project_dir: Path) -> Path | None:
             if proc.returncode != 0:
                 return None
 
-        # 2) bundle（产出 build/）。cli 的 bin 入口是 remotion-cli.js。
+        # 2) bundle（产出 build/）。走 player 入口（干净播放器页），不是 Studio。
+        #    cli 的 bin 入口是 remotion-cli.js。
         #    注意：Windows 下 node + 绝对路径 + cwd 会把路径重复拼接（MODULE_NOT_FOUND），
         #    所以这里传相对路径，靠 cwd 定位
         cli_rel = Path("node_modules") / "@remotion" / "cli" / "remotion-cli.js"
         if not (project_dir / cli_rel).exists():
             return None
         proc = await asyncio.create_subprocess_exec(
-            node, str(cli_rel), "bundle",
+            node, str(cli_rel), "bundle", "src/player.tsx",
             cwd=str(project_dir),
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
