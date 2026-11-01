@@ -858,6 +858,11 @@ async def _run_video(
                 remotion_video.write_info_page(res, task_id, settings.data_dir, res.model)
                 record["project_dir"] = str(res.project_dir)
                 record["fallback_shots"] = res.gate.stats.get("fallbacks", 0)
+                # 在线预览：bundle 成浏览器可直接播放的静态目录。
+                # 成功则 /v/{task_id} 直接播视频；失败降级回信息页（功能不因预览构建而报错）
+                await task.push({"type": "stage", "stage": "bundle", "label": "打包成网页可直接播放"})
+                build_dir = await remotion_video.bundle_project(res.project_dir)
+                record["bundle"] = str(build_dir) if build_dir else None
         else:
             # 视频模型没配凭据：直接走模板，不阻塞整条链路
             note = "mock 模式，不调模型" if settings.mock else "视频模型未配置，使用模板渲染"
@@ -934,15 +939,48 @@ async def video(payload: VideoIn) -> dict[str, str]:
 
 @app.get("/v/{artifact_id}")
 async def video_artifact(artifact_id: str) -> FileResponse:
-    """视频产物。task_id 或 task_id-a2（某一次被拦下的尝试稿）。"""
+    """视频产物。优先返回 bundle 后的在线播放页（build/index.html），
+    让用户网页直接看；bundle 不存在则降级回信息页（教怎么本地 studio 预览）。
+
+    task_id 或 task_id-a2（某一次被拦下的尝试稿）。
+    """
     import re as _re
 
     if not _re.fullmatch(r"[a-z0-9]+(-a\d+)?", artifact_id):
         raise HTTPException(400, "bad id")
+
+    # 优先：bundle 产物 → 网页直接播放
+    build_index = settings.data_dir / "videos" / f"{artifact_id}-remotion" / "build" / "index.html"
+    if build_index.exists():
+        return FileResponse(build_index, media_type="text/html; charset=utf-8")
+
+    # 降级：信息页（旧行为）
     path = settings.data_dir / "videos" / f"{artifact_id}.html"
     if not path.exists():
         raise HTTPException(404, "video not found")
     return FileResponse(path, media_type="text/html; charset=utf-8")
+
+
+@app.get("/v/{artifact_id}/{res_path:path}")
+async def video_asset(artifact_id: str, res_path: str) -> FileResponse:
+    """bundle 产物的静态资源（bundle.js / chunk / public 里的 wav 等）。
+
+    index.html 里用相对路径引这些资源，所以要在 /v/{task_id}/ 前缀下托管。
+    """
+    import re as _re
+
+    if not _re.fullmatch(r"[a-z0-9]+(-a\d+)?", artifact_id):
+        raise HTTPException(400, "bad id")
+    # 防目录穿越
+    if ".." in res_path or res_path.startswith("/"):
+        raise HTTPException(400, "bad path")
+    build_dir = settings.data_dir / "videos" / f"{artifact_id}-remotion" / "build"
+    target = (build_dir / res_path).resolve()
+    if not str(target).startswith(str(build_dir.resolve())):
+        raise HTTPException(400, "bad path")
+    if not target.is_file():
+        raise HTTPException(404, "asset not found")
+    return FileResponse(target)
 
 
 @app.get("/")

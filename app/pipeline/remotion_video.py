@@ -655,6 +655,67 @@ def write_info_page(res: RemotionResult, task_id: str, data_dir: Path, model: st
     return out
 
 
+async def bundle_project(project_dir: Path) -> Path | None:
+    """把 Remotion 工程 bundle 成浏览器可直接播放的静态目录（build/）。
+
+    播放发生在用户浏览器（@remotion/player），服务器不出 mp4，避开
+    headless Chrome 1.5G 内存的坑。bundle 是一次性构建，产出的
+    build/index.html 自带播放器，/v/{task_id} 路由托管它即可在线预览。
+
+    返回 build 目录；任何失败（缺 Node / 依赖装不上 / 内存不够）返回 None，
+    调用方降级回「信息页」——视频功能不能因为预览构建失败而整体报错。
+    """
+    import asyncio
+    import shutil as _shutil
+
+    if not (project_dir / "package.json").exists():
+        return None
+    node = _shutil.which("node")
+    npm = _shutil.which("npm")
+    if not node or not npm:
+        return None
+
+    build = project_dir / "build"
+    # 已有 build 且是完整的（有 index.html + bundle.js）就直接复用，跳过重构建
+    if (build / "index.html").exists() and (build / "bundle.js").exists():
+        return build
+
+    try:
+        # 1) 装依赖（node_modules 不存在才装，避免每次重装一两分钟）
+        if not (project_dir / "node_modules").exists():
+            proc = await asyncio.create_subprocess_exec(
+                npm, "install", "--no-audit", "--no-fund",
+                cwd=str(project_dir),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+            if proc.returncode != 0:
+                return None
+
+        # 2) bundle（产出 build/）。cli 的 bin 入口是 remotion-cli.js。
+        #    注意：Windows 下 node + 绝对路径 + cwd 会把路径重复拼接（MODULE_NOT_FOUND），
+        #    所以这里传相对路径，靠 cwd 定位
+        cli_rel = Path("node_modules") / "@remotion" / "cli" / "remotion-cli.js"
+        if not (project_dir / cli_rel).exists():
+            return None
+        proc = await asyncio.create_subprocess_exec(
+            node, str(cli_rel), "bundle",
+            cwd=str(project_dir),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode != 0:
+            return None
+    except (asyncio.TimeoutError, OSError):
+        return None
+
+    if (build / "index.html").exists():
+        return build
+    return None
+
+
 # ---------------------------------------------------------------- 主入口
 
 async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
