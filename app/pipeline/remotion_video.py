@@ -127,6 +127,9 @@ class RemotionResult:
     model: str
     duration_s: float
     attempts: list[dict] = field(default_factory=list)
+    # 实际降级信息（首选模型不可用、改用了后备）：{from, from_model, to, to_model, reason}
+    # None 表示全程用的就是首选模型
+    fallback: dict | None = None
 
 
 # ---------------------------------------------------------------- 静态工程骨架
@@ -808,9 +811,12 @@ async def bundle_project(project_dir: Path) -> Path | None:
 async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
                    data_dir: Path, task_id: str) -> RemotionResult:
     from .sfx import render_sfx
+    from ..llm import fallback_info, reset_fallback
 
     history: list[dict] = []
     provider = llm.provider("video")
+    # 开新一轮前清掉上一轮的降级记录（同一协程里连着跑多次时不会串）
+    reset_fallback()
 
     # 1) 镜头映射
     menu = _index_menu()
@@ -862,7 +868,13 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
                              "fallbacks": sum(1 for s in shots if s.used_fallback),
                              "duration_s": round(frame_cursor, 2)})
 
+    # 降级信息：首选 provider 挂了就记下来（上层给用户提示 + 留痕记实际用的模型）
+    fb = fallback_info()
+    real_label = fb["to"] if fb else provider.label
+    real_model = fb["to_model"] if fb else provider.model
+
     res = RemotionResult(project_dir=project, shots=shots, gate=gate,
-                         provider_label=provider.label, model=provider.model,
-                         duration_s=frame_cursor, attempts=history)
+                         provider_label=real_label, model=real_model,
+                         duration_s=frame_cursor, attempts=history,
+                         fallback=fb)
     return res

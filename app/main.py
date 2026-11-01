@@ -854,12 +854,21 @@ async def _run_video(
 
         if provider is not None:
             res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id)
-            record["provider"] = res.provider_label
+            record["provider"] = res.provider_label   # 实际用的（降级后就是后备那个）
             record["model"] = res.model
+            record["fallback"] = res.fallback         # 降级详情，留痕可查
             record["attempts"] = res.attempts
             record["gate"] = {"ok": res.gate.ok, "failures": res.gate.failures, "stats": {
                 k: v for k, v in res.gate.stats.items() if k != "sfx"
             }}
+            # 模型降级必须告诉用户：首选不可用时画面质量会明显不一样，
+            # 不提示的话用户只会觉得「这次怎么变丑了」。
+            if res.fallback:
+                await task.push({"type": "fallback", **res.fallback})
+                await task.push({
+                    "type": "note",
+                    "text": f"⚠️ {res.fallback['from']} 当前不可用，已降级为 {res.fallback['to']} 生成",
+                })
             await task.push(
                 {
                     "type": "gate",
@@ -868,6 +877,7 @@ async def _run_video(
                     "stats": {k: v for k, v in res.gate.stats.items() if k != "sfx"},
                     "attempts": res.attempts,
                     "model": res.model,
+                    "fallback": res.fallback,
                 }
             )
             # 工程级硬伤（Root/组件缺失）→ 降级模板；个别镜头落模板属软伤，照用+标注

@@ -1013,3 +1013,12 @@ textarea::placeholder{color:var(--dim)}
   .js body.boot-landing .kw::after{transform:scaleX(1)}
   .glow,.dots,.wm,.hero-card-in{transform:none !important}
 }
+
+/* ============ 模型降级提示（首选模型不可用、已切后备） ============ */
+.vfallback{
+  display:flex;align-items:center;gap:4px;
+  padding:9px 12px;margin:0 0 8px;
+  background:#fff8ed;border:1px solid #f2d3a0;border-left:3px solid #e8a33d;
+  border-radius:8px;font-size:12px;line-height:1.55;color:#8a5a15;
+}
+.vfallback b{font-weight:600;color:#6d4610}

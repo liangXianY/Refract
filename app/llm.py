@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import re
 from typing import AsyncIterator
@@ -32,6 +33,24 @@ from .config import Settings
 from .models import ModelRegistry, Provider
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+# 本次调用链的降级记录。用 contextvar 而不是实例属性——
+# 多个请求并发时共享同一个 LLMClient，记在 self 上会串。
+# None = 全程用的首选模型；非 None = 中途换过 provider。
+_FALLBACK: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "llm_fallback", default=None
+)
+
+
+def fallback_info() -> dict | None:
+    """读本次调用链的降级信息（上层用来给用户提示「XX 不可用，已降级为 YY」）。"""
+    return _FALLBACK.get()
+
+
+def reset_fallback() -> None:
+    """开新一轮任务前清掉，避免上一轮的记录串到这一轮。"""
+    _FALLBACK.set(None)
+
 
 
 class LLMError(RuntimeError):
@@ -179,6 +198,7 @@ class LLMClient:
                 last_exc = self._as_llm_error(p, exc)
                 if i < len(chain) - 1:
                     # 还有后备，换下一个试（403/超时都算）
+                    self._record_fallback(p, chain[i + 1], last_exc)
                     continue
                 raise last_exc
         raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
@@ -284,6 +304,7 @@ class LLMClient:
             except (LLMError, httpx.HTTPError, asyncio.TimeoutError) as exc:
                 last_exc = self._as_llm_error(p, exc)
                 if i < len(chain) - 1:
+                    self._record_fallback(p, chain[i + 1], last_exc)
                     continue  # 还有后备，换下一个
                 raise last_exc
         raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
@@ -328,6 +349,22 @@ class LLMClient:
             return LLMError(f"[{p.label}] 请求超时：{type(exc).__name__}")
         return LLMError(f"[{p.label}] 网络错误：{type(exc).__name__}: {exc}")
 
+    @staticmethod
+    def _record_fallback(p: Provider, nxt: Provider, exc: Exception) -> None:
+        """记下「首选挂了、改用后备」这件事，供上层给用户提示。
+
+        只保留第一次降级（最上游那次的 from 才是用户理解的「不可用的那个」）。
+        """
+        if _FALLBACK.get() is not None:
+            return
+        _FALLBACK.set({
+            "from": p.label,
+            "from_model": p.model,
+            "to": nxt.label,
+            "to_model": nxt.model,
+            "reason": str(exc)[:200],
+        })
+
     # ---------------------------------------------------------------- 流式
 
     async def stream(
@@ -365,6 +402,7 @@ class LLMClient:
                 last_exc = self._as_llm_error(p, exc)
                 if produced or i >= len(chain) - 1:
                     raise last_exc  # 已经吐过内容，或没后备了，就这么报
+                self._record_fallback(p, chain[i + 1], last_exc)
                 continue
         raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
 

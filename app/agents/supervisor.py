@@ -498,6 +498,10 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> d
     await emit({"type": "stage", "stage": "render", "label": "选配方卡 · 逐镜头生成动画"})
     res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id)
 
+    # 首选模型不可用、已降级——立刻告诉用户，别让他纳闷画面质量怎么变了
+    if res.fallback:
+        await emit({"type": "fallback", **res.fallback})
+
     # 在线预览：bundle 成网页可直接播放
     build_dir = await remotion_video.bundle_project(res.project_dir)
 
@@ -507,6 +511,7 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> d
         "video_url": f"/v/{task_id}" if build_dir else None,
         "project_dir": str(res.project_dir),
         "model": res.model,
+        "fallback": res.fallback,
         "degraded": not res.gate.ok,
     }
 
@@ -647,6 +652,7 @@ async def handle_chat(
             "url": plans_step.get("video_url") or f"/v/{task_id}",
             "degraded": plans_step.get("degraded", False),
             "model": plans_step.get("model", ""),
+            "fallback": plans_step.get("fallback"),
             "summary": plans_step.get("summary", ""),
         })
 

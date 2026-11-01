@@ -496,6 +496,13 @@ function makeTurn() {
         break;
       case 'video': {
         // 直接生成的视频：嵌入播放器，网页直接播
+        // 模型降级要说清楚，否则用户只会觉得画面质量莫名其妙变差了
+        if (ev.fallback) {
+          const bar = document.createElement('div');
+          bar.className = 'vfallback';
+          bar.innerHTML = `⚠️ <b>${esc(ev.fallback.from)}</b> 当前不可用，已降级为 <b>${esc(ev.fallback.to)}</b> 生成`;
+          flow.appendChild(bar);
+        }
         const player = document.createElement('div');
         player.className = 'chatplayer';
         player.innerHTML = `<a href="${esc(ev.url)}" target="_blank" rel="noopener">新窗口打开</a>
@@ -928,6 +935,19 @@ async function genVideo() {
             if (step) { step.classList.remove('wait'); step.querySelector('.tstat').className = 'tstat run'; }
           }
         }
+        if (ev.type === 'fallback') {
+          // 首选模型不可用、已降级——必须让用户知道，
+          // 否则画面质量变了用户只会觉得「这次怎么变差了」
+          const flow = document.querySelector('#playerBox .vflow');
+          if (flow && !flow.querySelector('.vfallback')) {
+            const bar = document.createElement('div');
+            bar.className = 'vfallback';
+            bar.innerHTML = `⚠️ <b>${esc(ev.from)}</b> 当前不可用，已降级为 <b>${esc(ev.to)}</b> 生成`;
+            flow.insertBefore(bar, flow.firstChild);
+          }
+          const genEl = document.getElementById('vStepGen');
+          if (genEl) { const t = genEl.querySelector('.ttool'); if (t) t.textContent = ev.to; }
+        }
         if (ev.type === 'gate') {
           clearInterval(window.__vTimer);
           const gen = document.getElementById('vStepGen');
@@ -1157,6 +1177,19 @@ async function renderVideo(idx) {
         if (ev.type === 'stage') {
           const tx = document.getElementById('pstageTx');
           if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
+        }
+        if (ev.type === 'fallback') {
+          // 首选模型不可用、已降级——必须让用户知道，
+          // 否则画面质量变了用户只会觉得「这次怎么变差了」
+          const flow = document.querySelector('#playerBox .vflow');
+          if (flow && !flow.querySelector('.vfallback')) {
+            const bar = document.createElement('div');
+            bar.className = 'vfallback';
+            bar.innerHTML = `⚠️ <b>${esc(ev.from)}</b> 当前不可用，已降级为 <b>${esc(ev.to)}</b> 生成`;
+            flow.insertBefore(bar, flow.firstChild);
+          }
+          const genEl = document.getElementById('vStepGen');
+          if (genEl) { const t = genEl.querySelector('.ttool'); if (t) t.textContent = ev.to; }
         }
         if (ev.type === 'gate') {
           clearInterval(window.__vTimer);
