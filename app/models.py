@@ -178,6 +178,19 @@ class ModelRegistry:
                 return p
         return None
 
+    def resolve_chain(self, route: str) -> list[Provider]:
+        """按用途取「整条可用链」——所有凭据齐全的 provider，按配置顺序。
+
+        给调用层做运行时降级用：首选 403/超时/挂了，还能顺着链往下试。
+        resolve() 只看凭据配没配，不知道对面到底通不通；真容错要靠这个 + 重试。
+        """
+        out: list[Provider] = []
+        for key in self.routes.get(route, []):
+            p = self.providers.get(key)
+            if p and p.ready:
+                out.append(p)
+        return out
+
     def candidate(self, route: str) -> Provider | None:
         """不看凭据，取首选。用于前端展示「理论上会用哪个模型」。"""
         chain = self.routes.get(route) or []

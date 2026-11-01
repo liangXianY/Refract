@@ -162,8 +162,32 @@ class LLMClient:
         validate=None,
         route: str = "text",
     ) -> dict:
-        """返回解析后的 JSON。解析或校验失败时，把错误回灌给模型重试一次。"""
-        p = self.provider(route)
+        """返回解析后的 JSON。解析或校验失败时，把错误回灌给模型重试一次。
+
+        支持运行时降级：首选 provider 抛错（403/超时/挂了）时，顺着 route 的
+        可用链往下试——resolve() 只看凭据配没配，不知道对面通不通，真容错在这里。
+        """
+        chain = self._chain(route)
+        last_exc: Exception | None = None
+        for i, p in enumerate(chain):
+            try:
+                return await self._structured_with(
+                    p, system=system, user=user, max_tokens=max_tokens,
+                    temperature=temperature, validate=validate,
+                )
+            except (LLMError, httpx.HTTPError, asyncio.TimeoutError) as exc:
+                last_exc = self._as_llm_error(p, exc)
+                if i < len(chain) - 1:
+                    # 还有后备，换下一个试（403/超时都算）
+                    continue
+                raise last_exc
+        raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
+
+    async def _structured_with(
+        self, p: Provider, *, system: str, user: str, max_tokens: int,
+        temperature: float, validate=None,
+    ) -> dict:
+        """用指定 provider 跑结构化输出（含截断放大 + 格式回灌重试）。"""
         last_error = ""
         budget = max_tokens
 
@@ -248,8 +272,26 @@ class LLMClient:
 
         视频成片代码就靠这个：几千 token 的 HTML 没法流式拼装校验，
         必须整份拿到再跑闸门。
+
+        支持运行时降级：首选 403/超时/挂了，顺着链换下一个 provider 重来。
         """
-        p = self.provider(route)
+        chain = self._chain(route)
+        last_exc: Exception | None = None
+        for i, p in enumerate(chain):
+            try:
+                return await self._complete_with(p, system=system, user=user,
+                                                 max_tokens=max_tokens, temperature=temperature)
+            except (LLMError, httpx.HTTPError, asyncio.TimeoutError) as exc:
+                last_exc = self._as_llm_error(p, exc)
+                if i < len(chain) - 1:
+                    continue  # 还有后备，换下一个
+                raise last_exc
+        raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
+
+    async def _complete_with(
+        self, p: Provider, *, system: str, user: str, max_tokens: int, temperature: float
+    ) -> tuple[str, Provider]:
+        """用指定 provider 跑一次完整长输出（流式收集）。"""
         if p.protocol == "anthropic":
             # 走流式收集而不是一次性请求：
             # 中转站前面是 Cloudflare，非流式请求等 Opus 生成 3-5 分钟必吃 524；
@@ -263,6 +305,29 @@ class LLMClient:
         text, stop = await self._openai_collect(p, system, user, max_tokens, temperature)
         return strip_fence(text), p
 
+    def _chain(self, route: str) -> list[Provider]:
+        """取该用途的可用 provider 链（凭据齐全的，按配置顺序）。
+
+        空链时复用 provider() 的友好报错。
+        """
+        chain = self.registry.resolve_chain(route)
+        if not chain:
+            self.provider(route)  # 抛出「没有可用模型」的原始提示
+        return chain
+
+    @staticmethod
+    def _as_llm_error(p: Provider, exc: Exception) -> LLMError:
+        """把各种底层异常统一成 LLMError，让降级逻辑只认一种。
+
+        HTTP 错误在 _anthropic_* / _openai_* 里已经转成 LLMError 了；
+        这里主要兜网络层（超时/连不上）——那种情况同样该换下一个 provider 试。
+        """
+        if isinstance(exc, LLMError):
+            return exc
+        if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+            return LLMError(f"[{p.label}] 请求超时：{type(exc).__name__}")
+        return LLMError(f"[{p.label}] 网络错误：{type(exc).__name__}: {exc}")
+
     # ---------------------------------------------------------------- 流式
 
     async def stream(
@@ -274,16 +339,34 @@ class LLMClient:
         temperature: float = 0.6,
         route: str = "text",
     ) -> AsyncIterator[tuple[str, str]]:
-        """产出 (kind, text)，kind ∈ {reasoning, content}。"""
-        p = self.provider(route)
-        if p.protocol == "anthropic":
-            gen: AsyncIterator[tuple[str, str]] = self._stream_anthropic(
-                p, system, user, max_tokens, temperature
-            )
-        else:
-            gen = self._stream_openai(p, system, user, max_tokens, temperature)
-        async for item in gen:
-            yield item
+        """产出 (kind, text)，kind ∈ {reasoning, content}。
+
+        降级只在「还没吐出任何内容」时生效——已经流给前端的东西收不回来，
+        中途换 provider 会造成文本拼接错乱，所以首包一到就算建立成功。
+        """
+        chain = self._chain(route)
+        last_exc: Exception | None = None
+        for i, p in enumerate(chain):
+            if p.protocol == "anthropic":
+                gen: AsyncIterator[tuple[str, str]] = self._stream_anthropic(
+                    p, system, user, max_tokens, temperature
+                )
+            else:
+                gen = self._stream_openai(p, system, user, max_tokens, temperature)
+            produced = False
+            try:
+                async for item in gen:
+                    produced = True
+                    yield item
+                return
+            except (LLMError, httpx.HTTPError, asyncio.TimeoutError) as exc:
+                # 网络异常（超时/连不上）没被包装成 LLMError，也要能触发降级；
+                # 上游 403/超时都算「这个 provider 现在不能用」。
+                last_exc = self._as_llm_error(p, exc)
+                if produced or i >= len(chain) - 1:
+                    raise last_exc  # 已经吐过内容，或没后备了，就这么报
+                continue
+        raise last_exc if last_exc else LLMError(f"用途 {route} 没有可用模型")
 
     async def _anthropic_collect(
         self, p: Provider, system: str, user: str, max_tokens: int, temperature: float
