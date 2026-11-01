@@ -8,6 +8,25 @@
 
 线上演示：`http://<服务器地址>:8080`（demo 限流，仅展示链路）
 
+<img src="docs/screenshots/01-home.png" alt="首页" width="100%">
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/02-chat.png" alt="会话"></td>
+<td width="50%"><img src="docs/screenshots/03-article.png" alt="文章"></td>
+</tr>
+<tr>
+<td><b>会话</b>：说一句话，主 Agent 自己判断该抓取、写稿还是做视频，多步任务会先列执行计划再逐步推进。</td>
+<td><b>文章</b>：选平台 / 篇幅 / 选题来源，生成后可以流水式看正文，也能翻反思记录看每一轮为什么改。</td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/screenshots/04-video.png" alt="视频"></td>
+</tr>
+<tr>
+<td colspan="2"><b>视频</b>：输入主题直接出片。Agent 自动定视觉方向、选配方卡、逐镜头写动画代码，成品在网页里直接播放，不用下载、不用装环境。</td>
+</tr>
+</table>
+
 ---
 
 ## 为什么值得做
@@ -43,8 +62,10 @@
         └──────┤ retry  同参数重跑  │ refine 改参数重跑  │ replan 回退 Planner
                └───────────────────┴───────────────────┘
                                    │
-                                   ▼
-                          动画产物页（自包含 HTML）
+                    ┌──────────────┴──────────────┐
+                    ▼                             ▼
+            文章产物页（/r/id）          视频播放页（/v/id/）
+                                         配方卡 → 逐镜头 TSX → 闸门 → bundle
 ```
 
 ### 四个终止条件（少一个就会死循环或烧钱）
@@ -123,8 +144,13 @@ return "pass"
 
 服务器只有 1.9G 内存，Remotion 要拉 Chromium，峰值 2–4G，一跑就 OOM。
 
-而这类 motion graphics 本质是前端动画，输出网页反而是更好的体验：
-秒开、可暂停、可拖进度、清晰度无损、体积几十 KB。要发平台时再离线导出 mp4。
+所以交付形态是**网页**：Remotion 工程在服务端 bundle 成静态站点，
+前端用 `@remotion/player` 渲染，用户打开链接就是自动播放的片子——
+秒开、可暂停、可拖进度、清晰度无损，不用下载、不用装环境。
+要发平台时再在本地离线导出 mp4。
+
+bundle 是一次性构建（约 30 秒，峰值内存 500MB），产物按任务缓存，
+`/v/{task_id}/` 直接托管。构建失败不阻断主流程，降级到带镜头表的信息页。
 
 ### 9. 不同活派给不同模型，且能运行时切换
 
@@ -132,8 +158,8 @@ return "pass"
 
 | 用途 | 干什么 | 模型 | 理由 |
 |---|---|---|---|
-| `text` | 拆方案 / 写正文 / 打分 / 出三套视频方案 | DeepSeek flash | 调用频次高、输出短，要快 |
-| `video` | 写整份 Canvas 动画 HTML | Opus 5.5（中转） | 一次几百行代码 + 视觉理解，弱模型写不完整 |
+| `text` | 拆方案 / 写正文 / 打分 / 推荐视觉方向 | DeepSeek flash | 调用频次高、输出短，要快 |
+| `video` | 逐镜头写 Remotion 组件 | Opus 5.5（中转） | 每镜几百行 TSX + 视觉理解，弱模型写不完整 |
 
 实现上是一张可运行时修改的路由表（`app/models.py`），落盘到 `data/models.json`：
 
@@ -147,27 +173,42 @@ Claude 走 Anthropic 的 `/v1/messages`（system 是顶层字段、没有 `respo
 截断信号是 `stop_reason=max_tokens` 而非 `finish_reason=length`）。
 两套协议封在同一个 `LLMClient` 后面，调用方只写 `route="video"`。
 
-**降级链是硬要求，不是优化**：`video` 默认 `[cctq, deepseek-anthropic]`。
-中转站挂了或没配 key，自动落到 DeepSeek 的 Anthropic 兼容端点——
-协议一致，接上就能跑，只是模型弱一些。宁可出一版差的，不能整条链路断掉。
+**降级链是硬要求，不是优化**：`video` 默认 `[cctq, deepseek-chat]`。
+中转站挂了、key 被限流、请求超时，都会自动顺着链换下一个 provider——
+宁可出一版差的，不能整条链路断掉。
 
-### 10. 视频：先出三套方案，再写代码
+但降级**必须让用户看见**：首选模型不可用时画面质量会明显不一样，
+静默降级只会让用户觉得「这次怎么变丑了」。所以降级信息用 `contextvars` 记录
+（并发请求之间不会串），随 SSE 推到前端，界面直接提示
+「Opus 5.5（中转）当前不可用，已降级为 DeepSeek（代码）生成」，
+留痕里记的也是**实际使用**的模型，不是配置值。
 
-一次成片是重投入：几百行渲染代码，方向选错全废，重跑要一两分钟。
-所以先花几秒出三套**视觉语言真的不同**的方案（不是同款换配色），
-人挑一个再进成片。这一步的成本接近零，省下的是整份重做。
+### 10. 视频：配方卡约束 + 逐镜头生成 + 闸门兜底
 
-成片交给 `video` 路由的模型直接写整份 HTML，然后过四道闸门：
+让模型"自由发挥一整份动画"不可控——方向飘、风格乱、代码还经常跑不起来。
+这里把"动效设计"提前固化：124 张配方卡（每张是一种镜头范式，带时长 / 能量 / 适用场景），
+模型只做两件事：**选卡**（内容 → 镜头序列）和**填卡**（照着卡写这一个镜头的组件）。
 
-| 闸 | 查什么 | 挡掉的翻车 |
+管线分四段：
+
+| 阶段 | 干什么 | 失败怎么办 |
 |---|---|---|
-| 完整性 | 结尾有 `</html>` | **被 max_tokens 截断**：代码很漂亮，浏览器打开一片黑且不报错 |
-| 能播 | 有 canvas + 动画循环 + 零外链 | 依赖 CDN，断网就白屏 |
-| 有字 | 画布上的中文字 ≥ 40 | 「一个字都没有」的纯几何动画 |
-| 在动 | 时间轴被真实使用 | 本质是动态 PPT 的单帧排版 |
+| 选卡 | 按内容简报映射 5~8 张卡，排出能量曲线 | 编造的卡名直接丢弃，宁缺毋滥 |
+| 逐镜头 | 每镜生成一个 TSX 组件（约 4k token） | 过不了闸就带着具体原因重写一次，仍不过落模板 |
+| 组装 | 确定性拼 Root / 时序 / 音轨；音效与画面同源 mulberry32 | 工程级硬伤 → 整片降级模板 |
+| 打包 | bundle 成静态站点，用 `@remotion/player` 播放 | 失败降级信息页，不阻断主流程 |
 
-不过闸门就带着失败原因重修一次，再不过**降级到模板渲染**。
-降级不是失败兜底，是质量下限：宁可给 70 分的模板片，也不给 0 分的空白页。
+闸门分两级共 15 项，**全是确定性检查，不花 token**：
+
+**逐镜头（9 项）**：长度够、括号配对、有 `export default`、用了 `useCurrentFrame`、
+不含不确定调用（`Math.random` / `Date.now` / 定时器 / `fetch`）、
+import 在白名单内、有文案、真的渲染了镜头文字、props 解构完整。
+
+**工程级（6 项）**：镜头文件齐全、lib 组件在位、Root 正确注册、
+每个镜头都挂上了 Sequence、有音轨、JSX 属性带花括号。
+
+闸门不追求"好看"，只保证"不是废片"——宁可给 70 分的模板片，也不给 0 分的黑屏。
+每个镜头的尝试记录（第几版、为什么没过）都会回传，前端能看到哪几镜是落模板的。
 
 
 ---
@@ -227,8 +268,12 @@ app/
     video.py         模板渲染（降级路径）
     renderer.py      文章产物渲染
   main.py            FastAPI：SSE、任务、产物、模型路由
-mcp_server.py        7 个 MCP tool（抓取/文案/分镜/渲染/记忆）
-web/                 前端（原生 JS，无构建步骤）
+mcp_server.py        10 个 MCP tool（抓取/热榜/搜索/文案/视频/记忆），供外部 AI 客户端调用
+web/                 前端（原生 JS，无构建步骤，四个板块：会话/文章/视频/演示）
+  index.html         主页面
+  app.js             全部前端逻辑（板块切换、SSE 渲染、任务流）
+  styles.css         样式（主题色在 :root 的 CSS 变量）
+docs/screenshots/    界面截图
 tests/
   smoke.py           端到端冒烟
   video_probe.py     [legacy] 旧视频链路探针
@@ -237,10 +282,10 @@ tests/
   preview.py         离线产物预览
 ```
 
-视频产物形态（v2）：**Remotion 工程**（不出 mp4）。产物页给出镜头表/音效表/预览指引，
-本地 `npm install && npm run studio` 在浏览器预览。模型路由：本地测试 deepseek-chat
-（逐镜头生成，8k token 内），上线配好 CCTQ 凭据自动切 Opus（`data/models.json` 路由表，
-代码零改动）。
+视频产物形态：**Remotion 工程 + 服务端 bundle 的播放页**（不出 mp4）。
+`/v/{task_id}/` 打开就是自动播放的成片；bundle 失败则降级到带镜头表的信息页。
+模型路由：本地测试用 deepseek-chat（逐镜头生成，8k token 内），
+配好 CCTQ 凭据后自动切 Opus（`data/models.json` 路由表，代码零改动）。
 
 ---
 
@@ -248,23 +293,33 @@ tests/
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/generate` | `{input, url?, platform}` → `{task_id}` |
+| POST | `/api/chat` | 对话入口 `{input, session_id?}` → `{task_id}`，主 Agent 接管 |
+| POST | `/api/generate` | 文章 `{input, url?, platform, style?, words?}` → `{task_id}` |
+| POST | `/api/video/render` | 视频 `{input, url?, platform, words?, plan?}` → `{task_id}` |
 | GET | `/api/tasks/{id}/events` | SSE 事件流 |
+| GET | `/api/tasks/{id}` | 任务快照 |
 | GET | `/r/{id}` | 文章产物页 |
+| GET | `/v/{id}/` | 视频播放页（bundle 产物；构建失败降级信息页） |
 | GET | `/api/health` | 健康检查 + 当前模式 + 各用途用的模型 |
-| GET | `/api/models` | 模型路由快照（含凭据是否配好、是否降级） |
+| GET | `/api/models` | 模型路由快照（含凭据是否配好、实际是否降级） |
 | POST | `/api/models/route` | `{route, chain}` 运行时切换模型 |
 | POST | `/api/fetch` | 抓链接预览正文 |
 | POST | `/api/intent` | 只识别意图不执行 |
-| POST | `/api/video/plans` | 出三套视频方案 |
-| POST | `/api/video/render` | `{input, plan}` → `{task_id}`，按方案成片 |
-| GET | `/v/{id}` | 视频产物页 |
+| GET | `/api/hot/{source}` | 平台热榜（rednote/weibo/zhihu/douyin/baidu/tieba） |
+| GET | `/api/trending/github` | GitHub 趋势 |
+| GET | `/api/runs` | 生成记录列表 |
+| GET | `/api/styles` | 视频风格库 |
 | GET/POST/DELETE | `/api/memory` | 项目记忆读写 |
 
-SSE 事件类型：`stage / brief / round_start / delta / reflection / note / gate / done / error`
+SSE 事件：`stage / plan / step_start / step_end / tool_detail / delta / reflection / artifact / video / gate / fallback / note / done_reply / done / error / ping`
 
 `delta` 分 `kind=reasoning`（推理过程，前端显示"思考中"）和 `kind=content`（正文，流式渲染）。
-`gate` 是视频闸门结果：`{ok, failures, stats, attempts, model}`。
+
+`gate` 是视频闸门结果：`{ok, failures, stats, attempts, model, fallback}`。
+其中 `attempts` 是**逐镜头尝试明细**（数组），`failures` 是没过闸的具体原因。
+
+`fallback` 是模型降级通知：`{from, to, from_model, to_model, reason}`——
+首选模型不可用、已切后备时推送，前端据此显示「XX 不可用，已降级为 YY」。
 
 ---
 
@@ -275,6 +330,11 @@ SSE 事件类型：`stage / brief / round_start / delta / reflection / note / ga
 - 反思的评分器没有用标注样本校准，L3 分数只能做相对比较
 - 产物页是 16:9 横屏，竖屏版需要重排布局
 - 中转站的模型名需与账号可用模型一致（`CCTQ_MODEL`，默认 `claude-opus-5-5`）
+- **内存要留够**：bundle 时 node 峰值约 500MB，加上 Python 主进程总共 850MB 左右。
+  systemd 的 `MemoryHigh` 压到 560M 会让 node 被反复 throttle、打包静默失败，
+  视频只好降级成信息页。现在配的是 1000M / 1200M。
+- 中转站的 key 可能被限流或停用分组，届时 `video` 路由会降级到 DeepSeek（质量弱一档），
+  前端会明确提示，不会静默降级
 
 ---
 
