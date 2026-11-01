@@ -104,7 +104,7 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 - github_trending {"days": 7}       拉 GitHub 上 star 涨最快的新仓库（也是榜单，但专指 GitHub）
 - write_article {"input": "...", "platform": "wechat|xiaohongshu|video", "words": "short|medium|long"}
                                     写一篇可发布的文案。走完整的规划-写作-自检迭代。正文流式输出，不用你转述
-- video_plans {"input": "..."}      为主题出三套视频拍法，用户会挑一个
+- video_plans {"input": "..."}      为主题直接生成一条动画视频（自主创作，网页直接播放）
 - memory_recall {}                  读取用户的人设偏好和历史表现
 
 决策流程（先判断任务属于哪一类，再定工具，不是套固定流程）：
@@ -151,7 +151,7 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 
 关于 summarize 字段：
 - 第二类（联网查再回答）→ 一定 true，你要把搜索结果说人话
-- 第三类里 write_article/video_plans 自己会输出正文/方案 → false，避免重复
+- 第三类里 write_article/video_plans 自己会输出正文/视频 → false，避免重复
 - 做不到/闲聊 → 无所谓（没工具执行，用不上）
 """
 
@@ -196,7 +196,7 @@ def _fallback_plan(text: str) -> Plan:
         steps.append(Step("write_article", {"input": text}, "写文章"))
         return Plan(reply="按规则直接安排。", steps=steps)
     if it.kind == "video":
-        return Plan(reply="出视频方案。", steps=[Step("video_plans", {"input": text}, "出三套视频方案")])
+        return Plan(reply="生成动画。", steps=[Step("video_plans", {"input": text}, "生成动画视频")])
     # article（明确写了要产出）才走写稿
     return Plan(reply="收到。", steps=[Step("write_article", {"input": text, "platform": "wechat"}, "写文章")])
 
@@ -467,16 +467,47 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
 
 
 async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> dict:
-    from ..pipeline.director import recommend_plans
+    """对话里做视频：直接生成（自主创作），不再出方案让用户选。
+
+    和视频模块一个思路——Agent 从内容自动定视觉方向，走配方卡管线直接出片。
+    返回 video_url，前端直接嵌播放器。
+    """
+    from ..config import settings
+    from ..pipeline import remotion_video
+    from ..pipeline.director import VideoPlan, recommend_plans
     from ..pipeline.brief import plan as plan_brief
 
     brief = await plan_brief(llm, str(args.get("input") or ""), "video", "medium")
-    ps = await recommend_plans(llm, brief)
+
+    # 自动定视觉方向（取推荐首套），失败用默认方案兜底
+    plan_obj: VideoPlan | None = None
+    if not llm.cfg.mock:
+        try:
+            ps = await recommend_plans(llm, brief, opus_custom=False)
+            if ps.plans:
+                plan_obj = ps.plans[0]
+        except Exception:
+            plan_obj = None
+    if plan_obj is None:
+        plan_obj = VideoPlan(
+            id="A", name="自动方案", style="hud",
+            concept="以产品界面为主角，几何动效推进", why="自主创作默认方向",
+            duration=28, beats=[], palette=["#0b0f17", "#22d3ee", "#f8fafc"], motion="",
+        )
+
+    await emit({"type": "stage", "stage": "render", "label": "选配方卡 · 逐镜头生成动画"})
+    res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id)
+
+    # 在线预览：bundle 成网页可直接播放
+    build_dir = await remotion_video.bundle_project(res.project_dir)
+
     return {
         "tool": "video_plans",
-        "summary": f"《{brief.topic[:24]}》出了 {len(ps.plans)} 套拍法",
-        "brief": brief.model_dump(),
-        "plans": [p.model_dump() for p in ps.plans],
+        "summary": f"《{brief.topic[:24]}》{len(res.shots)} 镜头 · {res.duration_s:.1f}s",
+        "video_url": f"/v/{task_id}" if build_dir else None,
+        "project_dir": str(res.project_dir),
+        "model": res.model,
+        "degraded": not res.gate.ok,
     }
 
 
@@ -509,7 +540,7 @@ TOOLS: dict[str, dict] = {
     "lookup_hot": {"title": "读热点详情", "runner": _run_lookup_hot},
     "github_trending": {"title": "拉 GitHub 热点", "runner": _run_github_trending},
     "write_article": {"title": "写文章（规划-写作-反思）", "runner": _run_write_article},
-    "video_plans": {"title": "出视频方案", "runner": _run_video_plans},
+    "video_plans": {"title": "生成动画视频", "runner": _run_video_plans},
     "memory_recall": {"title": "读记忆", "runner": _run_memory_recall},
 }
 
@@ -610,7 +641,14 @@ async def handle_chat(
 
     plans_step = next((r for r in results if r["tool"] == "video_plans"), None)
     if plans_step:
-        await emit({"type": "video_plans", **{"plans": plans_step["plans"], "brief": plans_step["brief"]}})
+        # 直接生成完成：emit video 事件，前端直接嵌播放器
+        await emit({
+            "type": "video",
+            "url": plans_step.get("video_url") or f"/v/{task_id}",
+            "degraded": plans_step.get("degraded", False),
+            "model": plans_step.get("model", ""),
+            "summary": plans_step.get("summary", ""),
+        })
 
     # 是否生成文字答复：默认「有内容就总结」（泛化，不依赖模型输出字段），
     # planner 明确说 summarize=false 时才跳过（写稿/出视频这种工具自己输出的场景）。

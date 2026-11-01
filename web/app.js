@@ -193,50 +193,6 @@ function planCard(planBox, steps) {
   return el;
 }
 
-function plansCards(flow, plans) {
-  const wrap = document.createElement('div');
-  wrap.className = 'chatplans';
-  wrap.innerHTML = plans.map((p, i) => `
-    <div class="cplan">
-      <header><b>${esc(p.id)} · ${esc(p.name)}</b><span>${esc(p.style)} · ${p.duration}s</span></header>
-      <p>${esc(p.concept)}</p>
-      <button class="go" data-i="${i}">用这套拍</button>
-    </div>`).join('');
-  flow.appendChild(wrap);
-  wrap.querySelectorAll('.go').forEach(btn => {
-    btn.onclick = () => playInChat(flow, plans[+btn.dataset.i], btn);
-  });
-  chatlog.scrollTop = chatlog.scrollHeight;
-}
-
-async function playInChat(flow, plan, btn) {
-  btn.disabled = true;
-  btn.textContent = '生成中…';
-  const card = toolCard(flow, `按「${plan.name}」生成动画`, 'video_render');
-  try {
-    const done = await runTask(
-      { input: $('chatInput').value.trim() || plan.concept, platform: 'video', plan },
-      (ev) => {
-        if (ev.type === 'stage') card.querySelector('.ttitle').textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
-        if (ev.type === 'gate') card.querySelector('.ttime').textContent = ev.ok ? `闸门过·第${ev.attempts}版` : '未过闸';
-      },
-      '/api/video/render',
-      600000
-    );
-    card.querySelector('.tstat').className = 'tstat ok';
-    card.querySelector('.ttime').textContent = done.degraded ? '降级模板' : '完成';
-    const player = document.createElement('div');
-    player.className = 'chatplayer';
-    player.innerHTML = `<a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
-      ${done.degraded ? '<span class="degrade">模型没过闸门，降级了模板片</span>' : ''}<iframe src="${done.url}" title="视频成品"></iframe>`;
-    flow.appendChild(player);
-    chatlog.scrollTop = chatlog.scrollHeight;
-  } catch (e) {
-    card.querySelector('.tstat').className = 'tstat err';
-    card.querySelector('.tdetail').textContent = e.message;
-  }
-}
-
 // 建一轮「AI 消息」的渲染环境，返回事件处理器。实时和重放共用同一套渲染逻辑。
 function makeTurn() {
   const body = addMsg('ai', `<div class="planbox" data-plan hidden></div>
@@ -327,9 +283,17 @@ function makeTurn() {
           flow.appendChild(art);
         }
         break;
-      case 'video_plans':
-        plansCards(flow, ev.plans || []);
+      case 'video': {
+        // 直接生成的视频：嵌入播放器，网页直接播
+        const player = document.createElement('div');
+        player.className = 'chatplayer';
+        player.innerHTML = `<a href="${esc(ev.url)}" target="_blank" rel="noopener">新窗口打开</a>
+          ${ev.degraded ? '<span class="degrade">模型没过闸门，降级了模板片</span>' : ''}
+          <iframe src="${esc(ev.url)}" title="视频成品"></iframe>`;
+        flow.appendChild(player);
+        chatlog.scrollTop = chatlog.scrollHeight;
         break;
+      }
       case 'done_reply':
         break;
       case 'error':
