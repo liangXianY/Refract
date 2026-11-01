@@ -681,7 +681,9 @@ async def bundle_project(project_dir: Path) -> Path | None:
         return build
 
     try:
-        # 1) 装依赖（node_modules 不存在才装，避免每次重装一两分钟）
+        # 1) 装依赖（node_modules 不存在才装，避免每次重装一两分钟）。
+        #    第一次要拉 remotion 全家桶（含 compositor 二进制，几百 MB），
+        #    小内存服务器上可能 4-6 分钟，超时放宽到 600s。
         if not (project_dir / "node_modules").exists():
             proc = await asyncio.create_subprocess_exec(
                 npm, "install", "--no-audit", "--no-fund",
@@ -689,7 +691,7 @@ async def bundle_project(project_dir: Path) -> Path | None:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=600)
             if proc.returncode != 0:
                 return None
 
@@ -705,7 +707,7 @@ async def bundle_project(project_dir: Path) -> Path | None:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=600)
         if proc.returncode != 0:
             return None
     except (asyncio.TimeoutError, OSError):
