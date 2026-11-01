@@ -702,50 +702,101 @@ async function loadModels() {
   }
 }
 
-async function makePlans() {
+async function genVideo() {
   const text = $('vidInput').value.trim();
   const url = $('vidUrl').value.trim();
   if ((text.length < 2 && !url) || vidBusy) return;
 
   vidBusy = true;
   $('vidPlan').disabled = true;
-  $('vidPlan').textContent = '正在想方案…';
-  $('vidHint').textContent = '分析内容特征，给出三套不同拍法 + 一套 Opus 原创';
-  $('planList').innerHTML = `
-    <div class="tcard"><span class="tstat run"></span><span class="ttitle">分析内容特征</span>
-      <span class="ttool">deepseek</span><span class="ttime"></span>
-      <div class="tdetail"><div>主题 / 受众 / 大纲 / 数据点</div></div></div>
-    <div class="tcard"><span class="tstat run"></span><span class="ttitle">三套风格库方案</span>
-      <span class="ttool">deepseek</span><span class="ttime"></span>
-      <div class="tdetail"><div>避开你上一次的风格，三套视觉语言各不同</div></div></div>
-    <div class="tcard"><span class="tstat run"></span><span class="ttitle">Opus 原创第 4 套</span>
-      <span class="ttool">opus · custom</span><span class="ttime"></span>
-      <div class="tdetail"><div>不受风格库约束的原创视觉，失败会自动缺席</div></div></div>`;
-  $('playerBox').hidden = true;
+  $('vidPlan').textContent = '生成中…';
+  $('vidHint').textContent = '自动定视觉方向 → 选卡 → 逐镜头实现';
+  $('planList').hidden = true;
+  $('playerBox').hidden = false;
+  const t0 = Date.now();
+
+  $('playerBox').innerHTML = `
+    <div class="vflow">
+      <div class="tcard" id="vStepBrief"><span class="tstat run"></span><span class="ttitle">整理内容为分镜素材</span>
+        <span class="ttool">deepseek</span><span class="ttime"></span></div>
+      <div class="tcard wait" id="vStepPlan"><span class="tstat"></span><span class="ttitle">自动定视觉方向</span>
+        <span class="ttool">deepseek</span><span class="ttime"></span></div>
+      <div class="tcard wait" id="vStepGen"><span class="tstat"></span><span class="ttitle">选配方卡 · 逐镜头生成动画</span>
+        <span class="ttool">opus</span><span class="ttime" id="vTimer">0s</span>
+        <div class="tdetail"><div>映射镜头 → 逐镜头实现 → 拼装工程，通常 1-2 分钟</div></div></div>
+      <div class="tcard wait" id="vStepGate"><span class="tstat"></span><span class="ttitle">闸门校验</span>
+        <span class="ttool">静态检查</span><span class="ttime"></span>
+        <div class="tdetail"><div>逐镜头 + 工程级检查，不过回炉一次</div></div></div>
+    </div>
+    <div class="pstage slim"><div class="spin"></div>
+      <span id="pstageTx">生成中…</span></div>`;
+  window.__vTimer = setInterval(() => {
+    const el = document.getElementById('vTimer');
+    if (el) el.textContent = Math.floor((Date.now() - t0) / 1000) + 's';
+  }, 1000);
 
   try {
-    const resp = await fetch('/api/video/plans', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text, url, platform: 'video' }),
-    });
-    if (!resp.ok) {
-      let d = resp.statusText;
-      try { d = (await resp.json()).detail || d; } catch { /* noop */ }
-      throw new Error(d);
-    }
-    const data = await resp.json();
-    vidPlans = data.plans;
-    vidBrief = data.brief;
-    renderPlans(data.plans, data.brief);
-    $('vidHint').textContent = `${data.plans.length} 套方案 · ${data.model}${data.mocked ? ' · mock' : ''}`;
+    const done = await runTask(
+      { input: text, url, platform: 'video' },
+      (ev) => {
+        if (ev.type === 'stage') {
+          const tx = document.getElementById('pstageTx');
+          if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
+          // 按 stage 推进状态卡
+          const stepMap = { brief: 'vStepBrief', plan: 'vStepPlan', render: 'vStepGen', bundle: 'vStepGen' };
+          const stepId = stepMap[ev.stage];
+          if (stepId) {
+            document.querySelectorAll('#playerBox .tcard .tstat').forEach(s => { if (s.className === 'tstat run') s.className = 'tstat ok'; });
+            const step = document.getElementById(stepId);
+            if (step) { step.classList.remove('wait'); step.querySelector('.tstat').className = 'tstat run'; }
+          }
+        }
+        if (ev.type === 'gate') {
+          clearInterval(window.__vTimer);
+          const gen = document.getElementById('vStepGen');
+          if (gen) { gen.querySelector('.tstat').className = 'tstat ok'; }
+          const gate = document.getElementById('vStepGate');
+          if (gate) {
+            gate.classList.remove('wait');
+            gate.querySelector('.tstat').className = `tstat ${ev.ok ? 'ok' : 'err'}`;
+            gate.querySelector('.ttime').textContent = `第 ${ev.attempts} 版`;
+            const det = gate.querySelector('.tdetail');
+            if (det) det.innerHTML = ev.ok
+              ? `<div>${ev.stats?.shots ?? '?'} 个镜头 · ${(ev.stats?.duration_s ?? 0).toFixed(1)}s${ev.stats?.fallbacks ? ` · ${ev.stats.fallbacks} 镜头落模板` : ''}</div>`
+              : `<div>${esc((ev.failures || ['未过'])[0]).slice(0, 60)}</div>`;
+          }
+          const tx = document.getElementById('pstageTx');
+          if (tx) tx.textContent = ev.ok ? '闸门通过，打包成网页…' : '未过闸门，保存降级片…';
+        }
+      },
+      '/api/video/render',
+      600000
+    );
+
+    const d = done.degraded;
+    $('playerBox').innerHTML = `
+      <div class="prow">
+        <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
+        <span class="meta">${esc(done.result?.model || '')}${d ? ' · 降级模板' : ''}</span>
+        <button class="ghost" id="pBack">重新生成</button>
+      </div>
+      <iframe src="${done.url}" title="视频成品"></iframe>`;
+    clearInterval(window.__vTimer);
+    document.getElementById('pBack').onclick = () => {
+      $('playerBox').hidden = true;
+      $('planList').hidden = false;
+      $('playerBox').querySelectorAll('.prow, .vframe-wrap, iframe').forEach(el => el.remove());
+    };
+    $('vidHint').textContent = d ? '模型产物没过闸门，已降级模板' : '完成 · 可直接播放';
   } catch (e) {
-    $('planList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
+    clearInterval(window.__vTimer);
+    $('playerBox').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
     $('vidHint').textContent = '失败：' + e.message;
+    $('planList').hidden = false;
   } finally {
     vidBusy = false;
     $('vidPlan').disabled = false;
-    $('vidPlan').textContent = '重新出方案';
+    $('vidPlan').textContent = '生成动画';
   }
 }
 
@@ -898,13 +949,13 @@ async function renderVideo(idx) {
   const t0 = Date.now();
   $('playerBox').innerHTML = `
     <div class="vflow">
-      <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出四套方案</span><span class="ttool">deepseek + opus</span><span class="ttime">✓</span></div>
-      <div class="tcard" id="vStepGen"><span class="tstat run"></span><span class="ttitle">按「${esc(plan.name)}」写动画代码</span>
+      <div class="tcard done"><span class="tstat ok"></span><span class="ttitle">出方案</span><span class="ttool">deepseek + opus</span><span class="ttime">✓</span></div>
+      <div class="tcard" id="vStepGen"><span class="tstat run"></span><span class="ttitle">选配方卡 · 逐镜头生成动画</span>
         <span class="ttool">${esc(plan.style)}</span><span class="ttime" id="vTimer">0s</span>
-        <div class="tdetail" id="vGenTx"><div>Opus 逐帧代码生成，通常 5-10 分钟，请耐心等秒数走</div></div></div>
+        <div class="tdetail" id="vGenTx"><div>映射镜头 → 逐镜头实现 → 拼装工程，通常 1-2 分钟</div></div></div>
       <div class="tcard wait" id="vStepGate"><span class="tstat"></span><span class="ttitle">闸门校验</span>
-        <span class="ttool">4 项检查</span><span class="ttime"></span>
-        <div class="tdetail"><div>完整性 / 能播 / 有字 / 在动</div></div></div>
+        <span class="ttool">静态检查</span><span class="ttime"></span>
+        <div class="tdetail"><div>逐镜头 + 工程级检查，不过回炉一次</div></div></div>
     </div>
     <div class="pstage slim"><div class="spin"></div>
       <span id="pstageTx">生成中…</span></div>
@@ -938,11 +989,11 @@ async function renderVideo(idx) {
             gate.querySelector('.ttime').textContent = `第 ${ev.attempts} 版`;
             const det = gate.querySelector('.tdetail');
             if (det) det.innerHTML = ev.ok
-              ? `<div>覆盖 ${Math.round((ev.stats.phrase_cover || 0) * 100)}% · 画布文字 ${ev.stats.drawn_han ?? '?'} 字</div>`
+              ? `<div>${ev.stats?.shots ?? '?'} 个镜头 · ${(ev.stats?.duration_s ?? 0).toFixed(1)}s${ev.stats?.fallbacks ? ` · ${ev.stats.fallbacks} 镜头落模板` : ''}</div>`
               : `<div>${esc((ev.failures || ['未过'])[0]).slice(0, 60)}</div>`;
           }
           const tx = document.getElementById('pstageTx');
-          if (tx) tx.textContent = ev.ok ? '闸门通过，保存成片…' : '未过闸门，保存降级片…';
+          if (tx) tx.textContent = ev.ok ? '闸门通过，打包成网页…' : '未过闸门，保存降级片…';
         }
       },
       '/api/video/render',
@@ -976,9 +1027,9 @@ async function renderVideo(idx) {
   }
 }
 
-$('vidPlan').onclick = makePlans;
+$('vidPlan').onclick = genVideo;
 $('vidInput').addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') makePlans();
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') genVideo();
 });
 
 /* ============================ 启动 ============================ */

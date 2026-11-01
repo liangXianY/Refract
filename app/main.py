@@ -114,9 +114,9 @@ class PlansIn(BaseModel):
 
 
 class RenderIn(PlansIn):
-    """成片：带上一轮选定的方案原样回传。"""
+    """成片：可带上选定的方案原样回传；不传则由 Agent 自动定视觉方向（自主创作模式）。"""
 
-    plan: dict[str, Any]
+    plan: dict[str, Any] | None = None
 
 
 class TaskState:
@@ -762,13 +762,15 @@ async def video_plans(payload: PlansIn) -> dict[str, Any]:
 
 @app.post("/api/video/render")
 async def video_render(payload: RenderIn, request: Request) -> dict[str, str]:
-    """第二步：按选定方案走 Remotion 管线出片（video-shotcraft 式：选卡→逐镜头→工程拼装）。"""
+    """成片：按选定方案（或 Agent 自动定方向）走 Remotion 管线出片。"""
     from .pipeline.director import VideoPlan
 
-    try:
-        plan_obj = VideoPlan(**payload.plan)
-    except Exception as exc:
-        raise HTTPException(400, f"方案格式不对：{exc}") from exc
+    plan_obj: Any = None
+    if payload.plan:
+        try:
+            plan_obj = VideoPlan(**payload.plan)
+        except Exception as exc:
+            raise HTTPException(400, f"方案格式不对：{exc}") from exc
 
     ip = client_ip(request)
     ok, reason = quota.can(ip, "video")
@@ -798,7 +800,7 @@ async def _run_video(
         "input": payload.input,
         "url": payload.url,
         "platform": payload.platform,
-        "plan": plan_obj.model_dump(),
+        "plan": plan_obj.model_dump() if plan_obj else None,
         "degraded": False,
         "attempts": [],
         "gate": None,
@@ -809,6 +811,33 @@ async def _run_video(
         await task.push({"type": "stage", "stage": "brief", "label": "整理内容为分镜素材"})
         brief = await _build_brief(payload.input, payload.url, payload.platform, payload.words)
         record["brief"] = brief.model_dump()
+
+        # 没传方案 → 自主创作：Agent 自动定视觉方向（取推荐方案里最有把握的一套）
+        if plan_obj is None and not settings.mock:
+            from .pipeline.director import recommend_plans
+
+            await task.push({"type": "stage", "stage": "plan", "label": "自动定视觉方向"})
+            ps = await recommend_plans(
+                llm, brief,
+                last_style=memory.get("last_video_style") or "",
+                opus_custom=False,  # 自主模式不单独花 Opus 出第 4 套
+            )
+            if ps.plans:
+                plan_obj = ps.plans[0]
+                record["plan"] = plan_obj.model_dump()
+                record["auto_plan"] = True
+
+        # 兜底：自动出方案失败（或 mock 模式）时，用一个极简默认方案保证链路不空转
+        if plan_obj is None:
+            from .pipeline.director import VideoPlan
+
+            plan_obj = VideoPlan(
+                id="A", name="自动方案", style="hud",
+                concept="以产品界面为主角，几何动效推进", why="自主创作默认方向",
+                duration=28, beats=[], palette=["#0b0f17", "#22d3ee", "#f8fafc"], motion="",
+            )
+            record["plan"] = plan_obj.model_dump()
+            record["auto_plan"] = True
 
         provider = registry.resolve("video")
         # mock 模式绝不调模型：验证链路不该花钱
