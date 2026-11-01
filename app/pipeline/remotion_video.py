@@ -723,6 +723,20 @@ async def bundle_project(project_dir: Path) -> Path | None:
         return build
 
     try:
+        # 0) 依赖复用：所有视频工程的 remotion 依赖完全一样（486MB 一套），
+        #    没必要每个视频都 npm install 一遍。这里统一走 videos/_shared/node_modules，
+        #    工程内的 node_modules 只是指向它的符号链接。
+        #    Windows 建符号链接需要管理员权限，失败就回退到各装各的（不影响功能，只是慢）。
+        node_modules = project_dir / "node_modules"
+        shared = project_dir.parent / "_shared" / "node_modules"
+        if not node_modules.exists() and not node_modules.is_symlink() and shared.exists():
+            try:
+                node_modules.symlink_to(Path("..") / "_shared" / "node_modules",
+                                       target_is_directory=True)
+                log.info("[bundle] 复用共享依赖：%s", project_dir.name)
+            except OSError as exc:
+                log.warning("[bundle] 建共享依赖链接失败，回退独立安装：%s", exc)
+
         # 1) 装依赖（node_modules 不存在才装，避免每次重装一两分钟）。
         #    第一次要拉 remotion 全家桶（含 compositor 二进制，几百 MB），
         #    小内存服务器上可能 4-6 分钟，超时放宽到 600s。
@@ -738,6 +752,16 @@ async def bundle_project(project_dir: Path) -> Path | None:
                 log.warning("[bundle] npm install 失败 rc=%s：%s",
                             proc.returncode, err.decode("utf-8", "ignore")[:800])
                 return None
+            # 装完把这份提升为共享副本，后续视频直接复用，不用再装
+            if not shared.exists():
+                try:
+                    shared.parent.mkdir(parents=True, exist_ok=True)
+                    node_modules.rename(shared)
+                    node_modules.symlink_to(Path("..") / "_shared" / "node_modules",
+                                           target_is_directory=True)
+                    log.info("[bundle] 首次安装完成，已提升为共享依赖")
+                except OSError as exc:
+                    log.warning("[bundle] 提升共享依赖失败（继续用独立目录）：%s", exc)
 
         # 2) bundle（产出 build/）。走 player 入口（干净播放器页），不是 Studio。
         #    cli 的 bin 入口是 remotion-cli.js。
