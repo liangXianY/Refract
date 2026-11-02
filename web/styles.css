@@ -688,7 +688,7 @@ textarea::placeholder{color:var(--dim)}
 }
 
 /* ---------- 会话 ---------- */
-.chatwrap{height:100%;display:flex;flex-direction:column;max-width:880px;margin:0 auto}
+.chatwrap{height:100%;min-height:0;display:flex;flex-direction:column;max-width:880px;margin:0 auto}
 .chatlog{flex:1;min-height:0;overflow-y:auto;padding:26px 0 10px}
 .chatbar{flex:none;padding:10px 0 2px}
 
@@ -1075,6 +1075,15 @@ textarea::placeholder{color:var(--dim)}
   .side{padding:14px;border-radius:12px;overflow:visible}
   .work{border-radius:12px;min-height:60vh}
 
+  /* 自然流式滚动的另一半：.split 高度交给内容了，body 也得能滚，
+     否则 overflow:hidden 会把下半屏直接裁掉（会话面板仍保持单屏应用壳，不受影响） */
+  body[data-view="workbench"][data-panel="article"],
+  body[data-view="workbench"][data-panel="video"]{
+    display:block;height:auto;min-height:100dvh;overflow-y:auto;overflow-x:hidden;
+  }
+  body[data-view="workbench"][data-panel="article"] #workbench,
+  body[data-view="workbench"][data-panel="video"] #workbench{min-height:0}
+
   /* 表单：字号必须 ≥16px——iOS Safari 聚焦时会自动放大整页，
      用户得双指缩回去，这是手机上最破坏体验的一类问题 */
   textarea,.inp{font-size:16px}
@@ -1127,7 +1136,10 @@ body[data-view="landing"] #modes{display:none}
 .navpw:hover{color:var(--accent-ink)}
 
 /* ---- 会话两栏 ---- */
-.chatlayout{height:100%;display:grid;grid-template-columns:248px minmax(0,1fr)}
+/* grid-template-rows 必须显式给 1fr：默认隐式 auto 行会被消息内容撑高，
+   .chatwrap / .chatlog 的高度链跟着变成内容高度，页面就被 overflow:hidden 裁掉（输入框消失）。 */
+.chatlayout{height:100%;min-height:0;display:grid;
+  grid-template-columns:248px minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
 .convside{display:flex;flex-direction:column;min-height:0;
   border-right:1px solid var(--line);padding:16px 12px 10px}
 .convtop{padding:0 2px 10px}

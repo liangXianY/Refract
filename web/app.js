@@ -455,6 +455,8 @@ function updateModesInd() {
 
 function switchMode(mode, instant = false) {
   if (!MODES.includes(mode)) return;
+  // 手机端要按当前面板决定 body 能不能滚（文章/视频走自然流式），所以面板名也要挂到 body 上
+  document.body.dataset.panel = mode;
   document.querySelectorAll('#modes button').forEach(b => {
     b.classList.toggle('on', b.dataset.mode === mode);
     b.setAttribute('aria-selected', b.dataset.mode === mode ? 'true' : 'false');
