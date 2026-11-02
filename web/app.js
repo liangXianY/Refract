@@ -853,6 +853,15 @@ async function loadHot(source) {
     const d = await (await fetch(`/api/hot/${source}?limit=10`)).json();
     if (d.detail) throw new Error(d.detail);
     renderHot(d.items);
+    // stale = 上游此刻拉不到，后端拿五分钟内的缓存顶上来了。
+    // 不提示的话用户会以为这就是最新榜单。
+    if (d.stale) {
+      const tip = document.createElement('p');
+      tip.className = 'ph';
+      tip.style.cssText = 'color:var(--warn);margin:8px 0 0;font-size:11px;line-height:1.5';
+      tip.textContent = '⚠️ 上游暂时拉不到，显示的是最近一次缓存，可能不是最新';
+      $('hotList').prepend(tip);
+    }
   } catch (e) {
     $('hotList').innerHTML = `<p class="ph" style="color:var(--err)">${esc(e.message)}</p>`;
   }

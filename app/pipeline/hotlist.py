@@ -14,13 +14,23 @@ base_url 用环境变量 HOT_API_BASE 切换。
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
 from dataclasses import dataclass, field
 
 import httpx
 
 DEFAULT_BASE = "https://60s.viki.moe"
 TIMEOUT = 15.0
+
+# 公共实例有每日额度，偶发失败是常态（用户实测「点了报错，过会儿又好了」）。
+# 两层兜底：失败重试一次，仍失败就拿旧缓存顶上并标记 stale——
+# 热榜是灵感素材，宁可用五分钟前的榜单，也别让用户对着报错框干瞪眼。
+_CACHE: dict[str, tuple[float, HotList]] = {}
+_CACHE_TTL = 300.0     # 5 分钟内视为新鲜，直接返回，不打上游
+_MAX_RETRY = 1         # 首次失败后再试一次，躲开瞬时抖动
+_RETRY_DELAY = 0.6
 
 # 暴露给规划层和前端的平台清单。key = 我们内部的 source 名
 SOURCES = {
@@ -54,6 +64,9 @@ class HotList:
     source: str
     source_label: str
     items: list[dict] = field(default_factory=list)  # {rank, title, score, link}
+    # 这份数据是缓存兜底的（上游此刻拿不到），前端可提示「可能不是最新」
+    stale: bool = False
+    error: str = ""
 
 
 def _base() -> str:
@@ -64,10 +77,8 @@ def available() -> bool:
     return bool(_base())
 
 
-async def fetch_hot(source: str, limit: int = 10) -> HotList:
-    """拉某个平台的热榜。失败抛 HotListError，由调用方决定降级。"""
-    if source not in SOURCES:
-        raise HotListError(f"不支持的平台：{source}（可选：{'/'.join(SOURCES)}）")
+async def _fetch_once(source: str, limit: int) -> HotList:
+    """真打一次上游。任何失败都抛 HotListError。"""
     url = f"{_base()}/v2/{ENDPOINTS[source]}"
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
@@ -109,6 +120,48 @@ async def fetch_hot(source: str, limit: int = 10) -> HotList:
         if len(items) >= limit:
             break
     return HotList(source=source, source_label=SOURCES[source], items=items)
+
+
+def _trim(hl: HotList, limit: int) -> HotList:
+    """缓存里存的是当时拿到的条数，取用时按当前 limit 截一下。"""
+    return HotList(
+        source=hl.source, source_label=hl.source_label,
+        items=hl.items[:limit], stale=hl.stale, error=hl.error,
+    )
+
+
+async def fetch_hot(source: str, limit: int = 10) -> HotList:
+    """拉某个平台的热榜，三级兜底：新鲜缓存 → 上游（失败重试一次）→ 旧缓存。
+
+    热榜是灵感素材不是关键路径。用户实测过「点了报错、过会儿又好了」——
+    60s 公共实例有每日额度，偶发失败是常态，所以不能一失败就甩报错。
+    宁可给一份五分钟前的榜单并标 stale，也别让用户对着错误提示干瞪眼。
+    """
+    if source not in SOURCES:
+        raise HotListError(f"不支持的平台：{source}（可选：{'/'.join(SOURCES)}）")
+
+    now = time.monotonic()
+    cached = _CACHE.get(source)
+    if cached and now - cached[0] < _CACHE_TTL:
+        return _trim(cached[1], limit)
+
+    last: HotListError | None = None
+    for attempt in range(_MAX_RETRY + 1):
+        try:
+            hl = await _fetch_once(source, limit)
+            _CACHE[source] = (time.monotonic(), hl)
+            return hl
+        except HotListError as exc:
+            last = exc
+            if attempt < _MAX_RETRY:
+                await asyncio.sleep(_RETRY_DELAY)  # 躲开瞬时抖动
+
+    if cached:
+        hl = _trim(cached[1], limit)
+        hl.stale = True
+        hl.error = str(last)
+        return hl
+    raise last if last else HotListError(f"{SOURCES[source]} 拉取失败")
 
 
 def to_material(hl: HotList) -> str:

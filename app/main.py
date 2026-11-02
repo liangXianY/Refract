@@ -245,7 +245,11 @@ async def platform_hot(source: str, limit: int = 10) -> dict[str, Any]:
         hl = await fetch_hot(source, limit=limit)
     except HotListError as exc:
         raise HTTPException(502, str(exc)) from exc
-    return {"source": hl.source, "label": hl.source_label, "items": hl.items}
+    return {
+        "source": hl.source, "label": hl.source_label, "items": hl.items,
+        # stale=True 表示上游此刻拿不到，返回的是缓存里的旧榜（前端可提示）
+        "stale": hl.stale, "note": hl.error,
+    }
 
 
 @app.get("/api/articles/{task_id}/md")
