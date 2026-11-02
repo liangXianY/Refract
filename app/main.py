@@ -228,15 +228,14 @@ class EmailIn(BaseModel):
     email: str = Field(min_length=3, max_length=200)
 
 
-class VerifyIn(BaseModel):
-    email: str = Field(min_length=3, max_length=200)
-    code: str = Field(min_length=4, max_length=8)
-
-
 class RegisterIn(BaseModel):
     email: str = Field(min_length=3, max_length=200)
     code: str = Field(min_length=4, max_length=8)
     password: str = Field(min_length=8, max_length=64)
+
+
+class ResetIn(RegisterIn):
+    """找回密码：和注册一样是「邮箱 + 验证码 + 密码」，但账号必须已存在。"""
 
 
 class LoginIn(BaseModel):
@@ -271,7 +270,7 @@ def _login_response(token: str, user: dict, is_new: bool = False) -> JSONRespons
 
 @app.post("/api/auth/send-code")
 async def auth_send_code(payload: EmailIn, request: Request) -> dict[str, Any]:
-    """发登录验证码。邮箱没注册过就是注册，不需要单独「注册」按钮。"""
+    """发邮箱验证码。只有两个场景会用到：注册、找回密码。日常登录不发信。"""
     _ip_send_guard(client_ip(request))
     try:
         # smtplib 是阻塞的，一次握手 1-3 秒，不能卡住事件循环
@@ -282,18 +281,9 @@ async def auth_send_code(payload: EmailIn, request: Request) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.post("/api/auth/verify")
-async def auth_verify(payload: VerifyIn, request: Request) -> JSONResponse:
-    try:
-        token, user = await asyncio.to_thread(auth_store.verify, payload.email, payload.code)
-    except auth_mod.AuthError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    return _login_response(token, user)
-
-
 @app.post("/api/auth/register")
 async def auth_register(payload: RegisterIn) -> JSONResponse:
-    """邮箱 + 验证码 + 密码注册。验证码证明邮箱是你的，密码是以后日常登录用的。
+    """邮箱 + 验证码 + 密码注册。验证码证明邮箱是你的，密码就是以后的登录凭证。
 
     注册完直接是登录态，不用再登一次。
     """
@@ -306,9 +296,21 @@ async def auth_register(payload: RegisterIn) -> JSONResponse:
     return _login_response(token, user)
 
 
+@app.post("/api/auth/reset-password")
+async def auth_reset_password(payload: ResetIn) -> JSONResponse:
+    """找回密码：邮箱 + 验证码 + 新密码。账号必须已存在，验完码直接登录。"""
+    try:
+        token, user = await asyncio.to_thread(
+            auth_store.reset_password, payload.email, payload.code, payload.password
+        )
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _login_response(token, user)
+
+
 @app.post("/api/auth/login")
 async def auth_login(payload: LoginIn) -> JSONResponse:
-    """邮箱 + 密码登录。"""
+    """邮箱 + 密码登录——唯一的日常登录方式，不碰 SMTP。"""
     try:
         token, user = await asyncio.to_thread(auth_store.login, payload.email, payload.password)
     except auth_mod.AuthError as exc:

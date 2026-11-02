@@ -1,4 +1,4 @@
-"""账号体系：邮箱验证码注册 / 登录，密码登录，会话归属。
+"""账号体系：邮箱验证码注册、密码登录、邮箱验证码找回密码、会话归属。
 
 为什么改成账号
 --------------
@@ -10,11 +10,14 @@ localStorage 里那个 IP 派生的 id，和服务端记的对不上。
 账号之后：用户 → 会话列表（可多条）→ 每条会话的对话历史。刷新、换设备、
 换网络都跟着账号走。
 
-登录方式
---------
-- **注册**：邮箱 + 验证码 + 密码。验证码证明邮箱是你的，密码是以后日常登录用的
-- **登录**：邮箱 + 密码
-- **验证码直接登录**：老账号、或忘了密码时用——邮箱能收信就能进，进去再改密码
+登录方式（只有一条路：密码）
+---------------------------
+- **注册**：邮箱 + 验证码 + 密码。验证码证明邮箱是你的，密码设一次，以后都用它
+- **登录**：邮箱 + 密码。不发信、不填码
+- **找回密码**：邮箱 + 验证码 + 新密码。忘了密码走这条，也是老账号补密码的唯一入口
+
+邮箱只在「注册」和「找回密码」两个环节出现（要证明邮箱是本人）。日常登录纯密码，
+不依赖 SMTP——发件邮箱抽风不影响老用户进来。
 
 密码为什么用 scrypt 而不是 bcrypt/argon2：标准库自带（hashlib.scrypt，
 Python 3.6+），不用给这个项目再加一个 C 扩展依赖。参数 n=2**14 是
@@ -301,17 +304,27 @@ margin:0 0 18px;color:#0f8a5f">{code}</p>
 
     # ---------------- 登录 ----------------
 
-    def verify(self, raw_email: str, code: str) -> tuple[str, dict]:
-        """验证码直接登录（邮箱第一次登录即注册）。返回 (token, user)。"""
+    def reset_password(self, raw_email: str, code: str, new_password: str) -> tuple[str, dict]:
+        """忘记密码：邮箱 + 验证码 + 新密码。返回 (token, user)。
+
+        验证码证明邮箱是本人，所以这里不需要原密码。账号必须已经存在——
+        找回密码不负责注册（想注册走 register，注册时就要设密码）。
+        """
         email = normalize_email(raw_email)
+        new_hash = hash_password(new_password)   # 先校验密码规则，别等验证码用完才说太短
         code = (code or "").strip()
         if not re.fullmatch(r"\d{6}", code):
             raise AuthError("验证码是 6 位数字")
 
         now = time.time()
         with self._lock, self._db() as c:
-            uid, user = self._redeem_code(c, email, code, now)
-            token = self._issue_token(c, uid, now)
+            uid, user = self._redeem_code(c, email, code, now, create=False)
+            c.execute(
+                "UPDATE users SET password_hash=?, password_at=? WHERE id=?",
+                (new_hash, now, uid),
+            )
+            # via='code'：这轮登录靠邮件验明了本人，自己再改一次密码不该被要求原密码
+            token = self._issue_token(c, uid, now, via="code")
         return token, user
 
     def register(self, raw_email: str, code: str, password: str) -> tuple[str, dict]:
@@ -329,6 +342,10 @@ margin:0 0 18px;color:#0f8a5f">{code}</p>
             row = c.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
             if row and row["password_hash"]:
                 raise AuthError("这个邮箱已经注册过了，直接用密码登录")
+            if not user["created"]:
+                # 早期「验证码登录」时代建的老账号：存在但没密码。
+                # 不能让注册这条路给它补密码——不然别人也能「注册」掉别人的号。
+                raise AuthError("这个邮箱早就有账号了，只是还没设密码——点「忘记密码」设一个")
             c.execute(
                 "UPDATE users SET password_hash=?, password_at=? WHERE id=?", (pw_hash, now, uid)
             )
@@ -349,7 +366,7 @@ margin:0 0 18px;color:#0f8a5f">{code}</p>
             if row is None:
                 raise AuthError("这个邮箱还没注册")
             if not row["password_hash"]:
-                raise AuthError("这个账号还没设密码，先用验证码登录，进去再设一个")
+                raise AuthError("这个账号还没有密码，点「忘记密码」用邮箱验证码设一个")
             if not verify_password(password, row["password_hash"]):
                 raise AuthError("密码不对")
 
@@ -386,10 +403,12 @@ margin:0 0 18px;color:#0f8a5f">{code}</p>
             )
 
     def _redeem_code(self, c: sqlite3.Connection, email: str, code: str,
-                     now: float) -> tuple[str, dict]:
-        """校验并消耗一个验证码，返回 (user_id, user)。账号不存在就顺手建。
+                     now: float, create: bool = True) -> tuple[str, dict]:
+        """校验并消耗一个验证码，返回 (user_id, user)。
 
         调用方必须持锁、在事务里。验证码在这里删掉——一次性，用完即废。
+
+        create=False 时账号必须已存在（找回密码用）：不能因为收得到信就凭空造号。
         """
         row = c.execute(
             "SELECT code, expires_at, tries FROM email_codes WHERE email=?", (email,)
@@ -407,8 +426,12 @@ margin:0 0 18px;color:#0f8a5f">{code}</p>
             left = CODE_TRIES - row["tries"] - 1
             raise AuthError(f"验证码不对，还能试 {max(left, 0)} 次")
 
-        c.execute("DELETE FROM email_codes WHERE email=?", (email,))
+        # 码对了才看账号在不在：不然谁都能拿一个瞎编的码去探「这个邮箱有没有注册」
         u = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        if u is None and not create:
+            raise AuthError("这个邮箱还没注册过，先去注册")
+
+        c.execute("DELETE FROM email_codes WHERE email=?", (email,))
         if u is None:
             uid = "u_" + secrets.token_hex(8)
             c.execute(

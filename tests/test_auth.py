@@ -49,20 +49,21 @@ def test_code_flow() -> None:
 
     # 错码：要报错并计次，不能放行
     try:
-        st.verify("xiaoliang@qq.com", "000000" if code != "000000" else "111111")
+        st.register("xiaoliang@qq.com", "000000" if code != "000000" else "111111",
+                    "helloworld123")
     except AuthError as exc:
         assert "不对" in str(exc)
     else:
         raise AssertionError("错码不该通过")
 
-    token, user = st.verify("xiaoliang@qq.com", code)
+    token, user = st.register("xiaoliang@qq.com", code, "helloworld123")
     assert token and user["email"] == "xiaoliang@qq.com" and user["created"] is True
 
     # 验证码一次性
     try:
-        st.verify("xiaoliang@qq.com", code)
+        st.reset_password("xiaoliang@qq.com", code, "anotherpw456")
     except AuthError as exc:
-        assert "先点" in str(exc) or "过期" in str(exc)
+        assert "先点" in str(exc) or "过期" in str(exc) or "注册" in str(exc)
     else:
         raise AssertionError("验证码只能用一次")
 
@@ -73,20 +74,18 @@ def test_code_flow() -> None:
     assert st.user_by_token(token) is None, "退出后 token 必须立刻失效"
 
     # 同一个邮箱再登录 = 同一个账号，不是新注册
-    out2 = st.issue_code("xiaoliang@qq.com")
-    # 手动清掉限流记录，模拟「过了一分钟」
-    with st._db() as c:
-        c.execute("DELETE FROM code_sends WHERE email=?", ("xiaoliang@qq.com",))
-        c.execute("DELETE FROM email_codes WHERE email=?", ("xiaoliang@qq.com",))
-    out2 = st.issue_code("xiaoliang@qq.com")
-    _, user2 = st.verify("xiaoliang@qq.com", out2["dev_code"])
+    _, user2 = st.login("xiaoliang@qq.com", "helloworld123")
     assert user2["created"] is False and user2["id"] == user["id"], "老邮箱不该变成新账号"
 
 
 def test_conversations_isolated() -> None:
     st = fresh()
-    a_token, a = st.verify("a@qq.com", st.issue_code("a@qq.com")["dev_code"])
-    b_token, b = st.verify("b@qq.com", st.issue_code("b@qq.com")["dev_code"])
+
+    def make(email: str):
+        return st.register(email, st.issue_code(email)["dev_code"], "helloworld123")
+
+    a_token, a = make("a@qq.com")
+    b_token, b = make("b@qq.com")
 
     c1 = st.create_conversation(a["id"])
     st.touch_conversation(c1["id"], "小红书怎么写")
@@ -168,14 +167,11 @@ def test_register_and_login() -> None:
 
 def test_set_password() -> None:
     st = fresh()
-    # 验证码进来的老账号（没密码）：直接设，不用原密码
-    code_token, user = st.verify("old@qq.com", st.issue_code("old@qq.com")["dev_code"])
+    token, user = st.register("old@qq.com", st.issue_code("old@qq.com")["dev_code"], "newpassword1")
     uid = user["id"]
-    assert st.user_by_id(uid)["has_password"] == 0
-    st.set_password(uid, "newpassword1", token=code_token)
-    assert st.login("old@qq.com", "newpassword1")
+    assert st.user_by_id(uid)["has_password"] == 1
 
-    # 之后是「密码登录」的会话：改密码必须先过原密码，否则拿到浏览器就能抢号
+    # 「密码登录」的会话：改密码必须先过原密码，否则拿到一台已登录的浏览器就能抢号
     pw_token, _ = st.login("old@qq.com", "newpassword1")
     try:
         st.set_password(uid, "anotherpw999", old_raw="瞎猜的", token=pw_token)
@@ -186,27 +182,76 @@ def test_set_password() -> None:
     st.set_password(uid, "anotherpw999", old_raw="newpassword1", token=pw_token)
     assert st.login("old@qq.com", "anotherpw999")
 
-    # 但「验证码登录」的会话能免原密码重设——这是忘了密码的唯一恢复路径
-    code_token2, _ = st.verify("old@qq.com", st.issue_code("old@qq.com")["dev_code"])
-    st.set_password(uid, "recoveredpw01", token=code_token2)
-    assert st.login("old@qq.com", "recoveredpw01")
 
-
-def test_code_login_still_works_with_password() -> None:
-    """设了密码之后，验证码登录仍然要能用——这是找回密码的唯一入口。"""
+def test_reset_password() -> None:
+    """找回密码：邮箱验证码 + 新密码，是忘了密码的唯一恢复路径。"""
     st = fresh()
     st.register("both@qq.com", st.issue_code("both@qq.com")["dev_code"], "helloworld123")
+
     code = st.issue_code("both@qq.com")["dev_code"]
-    token, user = st.verify("both@qq.com", code)
-    assert user["created"] is False and token
-    # 用验证码进来后把密码改掉，旧密码立刻失效
-    st.set_password(user["id"], "brandnewpw01", token=token)
+    token, user = st.reset_password("both@qq.com", code, "brandnewpw01")
+    assert token and user["created"] is False
+    # 重设完直接给登录态，且旧密码立刻失效
+    assert st.login("both@qq.com", "brandnewpw01")
     try:
         st.login("both@qq.com", "helloworld123")
     except AuthError:
         pass
     else:
-        raise AssertionError("改完密码旧密码还能登，等于没改")
+        raise AssertionError("重设密码后旧密码还能登，等于没改")
+
+    # 找回密码不能顺手把没注册的邮箱变成新账号
+    code2 = st.issue_code("ghost@qq.com")["dev_code"]
+    try:
+        st.reset_password("ghost@qq.com", code2, "whatever123")
+    except AuthError as exc:
+        assert "还没注册" in str(exc)
+    else:
+        raise AssertionError("找回密码不该给不存在的邮箱建号")
+
+    # 新密码也要过格式校验
+    code3 = st.issue_code("both@qq.com")["dev_code"]
+    try:
+        st.reset_password("both@qq.com", code3, "123")
+    except AuthError as exc:
+        assert "至少" in str(exc)
+    else:
+        raise AssertionError("太短的密码不该被接受")
+
+    # 没设过密码的老账号（历史数据）：走的就是这条路
+    with st._db() as c:
+        c.execute("UPDATE users SET password_hash=NULL WHERE email=?", ("both@qq.com",))
+    try:
+        st.login("both@qq.com", "brandnewpw01")
+    except AuthError as exc:
+        assert "忘记密码" in str(exc), "没密码的账号要指到找回密码，而不是让人干瞪眼"
+    else:
+        raise AssertionError("没密码不该登进来")
+
+
+def test_legacy_account_without_password() -> None:
+    """早期「验证码登录」建的账号没有密码：只能用「找回密码」补，不能被别人「注册」掉。"""
+    st = fresh()
+    now = time.time()
+    with st._db() as c:
+        c.execute("INSERT INTO users(id,email,created_at) VALUES(?,?,?)",
+                  ("u_legacy", "legacy@qq.com", now))
+
+    code = st.issue_code("legacy@qq.com")["dev_code"]
+    try:
+        st.register("legacy@qq.com", code, "helloworld123")
+    except AuthError as exc:
+        assert "忘记密码" in str(exc)
+    else:
+        raise AssertionError("老账号不能走注册补密码，否则任何人都能抢这个号")
+
+    # 走找回密码是对的
+    with st._db() as c:   # 清掉 60 秒重发限流 + 上一个码，模拟「过了一会儿重新发」
+        c.execute("DELETE FROM code_sends WHERE email=?", ("legacy@qq.com",))
+        c.execute("DELETE FROM email_codes WHERE email=?", ("legacy@qq.com",))
+    code2 = st.issue_code("legacy@qq.com")["dev_code"]
+    token, user = st.reset_password("legacy@qq.com", code2, "helloworld123")
+    assert token and st.login("legacy@qq.com", "helloworld123")
 
 
 if __name__ == "__main__":
@@ -216,5 +261,6 @@ if __name__ == "__main__":
     test_password_hash()
     test_register_and_login()
     test_set_password()
-    test_code_login_still_works_with_password()
-    print("ALL PASS 账号体系：验证码限流 / 一次性 / 密码注册登录 / 改密 / 会话隔离")
+    test_reset_password()
+    test_legacy_account_without_password()
+    print("ALL PASS 账号体系：验证码限流 / 一次性 / 注册设密码 / 密码登录 / 找回密码 / 会话隔离")

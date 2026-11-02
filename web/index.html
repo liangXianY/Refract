@@ -331,12 +331,11 @@
   <div class="am-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
     <button class="am-x" data-auth-close aria-label="关闭">×</button>
     <p class="am-kicker">REFRACT · ACCOUNT</p>
-    <h2 id="amTitle">登录 / 注册</h2>
-    <p class="am-sub" id="amSub">填邮箱收验证码就行，第一次登录自动建账号。</p>
+    <h2 id="amTitle">登录</h2>
+    <p class="am-sub" id="amSub">邮箱 + 密码，不发验证码。</p>
 
     <div class="am-tabs" id="amTabs">
-      <button data-amtab="code" class="on">验证码</button>
-      <button data-amtab="pw">密码</button>
+      <button data-amtab="pw" class="on">登录</button>
       <button data-amtab="reg">注册</button>
     </div>
 
@@ -346,7 +345,7 @@
              autocomplete="email" spellcheck="false">
     </div>
 
-    <div id="amCodeRow">
+    <div id="amCodeRow" hidden>
       <label class="lb mt" for="amCode">验证码</label>
       <div class="am-code">
         <input id="amCode" class="inp" inputmode="numeric" maxlength="6"
@@ -355,13 +354,7 @@
       </div>
     </div>
 
-    <div id="amOldRow" hidden>
-      <label class="lb mt" for="amOld">原密码</label>
-      <input id="amOld" class="inp" type="password" placeholder="先验证一下是你本人"
-             autocomplete="current-password">
-    </div>
-
-    <div id="amPwRow" hidden>
+    <div id="amPwRow">
       <label class="lb mt" for="amPw">密码</label>
       <input id="amPw" class="inp" type="password" placeholder="至少 8 位"
              autocomplete="current-password">
@@ -371,6 +364,10 @@
       <label class="lb mt" for="amPw2">再输一次密码</label>
       <input id="amPw2" class="inp" type="password" placeholder="确认密码"
              autocomplete="new-password">
+    </div>
+
+    <div class="am-links">
+      <button type="button" class="am-link" id="amAlt">忘记密码？</button>
     </div>
 
     <p class="am-msg" id="amMsg"></p>

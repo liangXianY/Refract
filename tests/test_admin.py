@@ -88,7 +88,9 @@ def test_conversation_view() -> None:
     # 普通用户不能拿管理员接口看别人的会话
     other = TestClient(app)
     code2 = other.post("/api/auth/send-code", json={"email": "other@qq.com"}).json()["dev_code"]
-    other.post("/api/auth/verify", json={"email": "other@qq.com", "code": code2})
+    other.post("/api/auth/register", json={
+        "email": "other@qq.com", "code": code2, "password": "helloworld123",
+    })
     assert other.get(f"/api/session/{cid}").status_code == 404, "别人的会话必须 404"
 
 

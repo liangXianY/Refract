@@ -1133,7 +1133,6 @@ body[data-view="landing"] #modes{display:none}
 .navout{border:0;background:none;color:var(--dim);font-size:var(--fs-micro);
   cursor:pointer;padding:2px 2px}
 .navout:hover{color:var(--err)}
-.navpw:hover{color:var(--accent-ink)}
 
 /* ---- 会话两栏 ---- */
 /* grid-template-rows 必须显式给 1fr：默认隐式 auto 行会被消息内容撑高，
@@ -1190,6 +1189,11 @@ body[data-view="landing"] #modes{display:none}
 .am-code{display:grid;grid-template-columns:1fr auto;gap:8px}
 .am-code .inp{letter-spacing:.24em;font-family:ui-monospace,Menlo,monospace}
 .am-code .ghost{height:40px;min-width:104px;white-space:nowrap;font-size:var(--fs-small)}
+/* 「忘记密码 / 返回登录 / 去登录」这类模式跳转：右对齐的文字按钮，别跟主按钮抢注意力 */
+.am-links{display:flex;justify-content:flex-end;margin-top:8px}
+.am-link{border:0;background:none;padding:2px 0;cursor:pointer;font-family:inherit;
+  font-size:var(--fs-micro);color:var(--muted);transition:color var(--dur-1)}
+.am-link:hover{color:var(--accent-ink)}
 .am-msg{min-height:16px;margin:10px 0 4px;font-size:var(--fs-micro);color:var(--err);line-height:1.5}
 .am-msg.ok{color:var(--accent-ink)}
 .am-go{width:100%;height:42px;margin-top:2px}

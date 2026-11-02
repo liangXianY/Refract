@@ -29,10 +29,8 @@ function renderNavAuth() {
       <div class="navuser" title="${esc(AUTH.user.email)}">
         <span class="av">${esc(initial)}</span>
         <span class="em">${esc(AUTH.user.email)}</span>
-        <button class="navout navpw" id="navPw">${AUTH.user.has_password ? '改密码' : '设密码'}</button>
         <button class="navout" id="navOut">退出</button>
       </div>`;
-    $('navPw').onclick = () => openLogin('setpw');
     $('navOut').onclick = logout;
   } else {
     box.innerHTML = '<button class="btn-primary nav-cta" id="navLogin">登录</button>';
@@ -119,24 +117,25 @@ async function logout() {
 }
 
 /* ---------------- 登录弹窗 ----------------
-   四种模式：验证码登录（含忘密码找回）、密码登录、注册、给已登录账号设密码。
-   注册走「邮箱验证码 + 设密码」，日常登录走密码——不用每次等邮件。 */
+   三种模式：密码登录（默认）、注册、找回密码。
+   只有「注册」和「找回密码」会发邮件验证码；日常登录纯密码，不等信。
+   顶栏不再提供「设密码」入口——密码在注册时就定下了。 */
 
 const AM = {
-  mode: 'code',
+  mode: 'pw',
   conf: {
-    code:  { title: '验证码登录', sub: '填邮箱收一个 6 位验证码，第一次登录自动建账号。',
-             tip: '忘了密码也走这条路：能收信就能进，进去再设一个新密码。',
-             email: 1, go: '登录', code: 1, pw: 0, pw2: 0, tabs: 1 },
-    pw:    { title: '密码登录', sub: '用注册时设的密码登录。',
-             tip: '密码忘了？切回「验证码」，用邮箱收个码进来重设。',
-             email: 1, go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1 },
-    reg:   { title: '注册', sub: '邮箱收验证码，再设一个密码，以后用密码直接登。',
+    pw:    { title: '登录', sub: '邮箱 + 密码，不发验证码。',
+             tip: '登录后对话存在账号下：换设备、换网络都能接着聊，长期偏好也跟着你。',
+             email: 1, go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1,
+             alt: ['reset', '忘记密码？'], newpw: false },
+    reg:   { title: '注册', sub: '邮箱收验证码，同时把密码设好——以后只用密码登录。',
              tip: '注册后，对话记录和长期偏好都挂在这个账号下，换设备也在。',
-             email: 1, go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1 },
-    setpw: { title: '设置密码', sub: '给这个账号设个密码，下次不用等邮件。',
-             tip: '密码只存哈希（scrypt + 随机盐），服务端看不到明文。',
-             go: '设置密码', email: 0, code: 0, pw: 1, pw2: 1, tabs: 0 },
+             email: 1, go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1,
+             alt: ['pw', '已有账号？去登录'], newpw: true },
+    reset: { title: '找回密码', sub: '邮箱收验证码，直接设一个新密码。',
+             tip: '以前用验证码登录、还没设过密码的老账号，也是走这里补一个。',
+             email: 1, go: '重设密码并登录', code: 1, pw: 1, pw2: 1, tabs: 0,
+             alt: ['pw', '← 返回登录'], newpw: true },
   },
 };
 
@@ -153,9 +152,14 @@ function setAmMode(mode) {
   $('amPwRow').hidden = !c.pw;
   $('amPw2Row').hidden = !c.pw2;
   $('amTabs').hidden = !c.tabs;
-  // 改密码要先过原密码这一关，不然别人拿到一台已登录的浏览器就能把号抢走。
-  // 没设过密码的账号（验证码注册的第一次）不需要
-  $('amOldRow').hidden = !(mode === 'setpw' && AUTH.user && AUTH.user.has_password);
+  // 登录是「现有密码」，注册/重设是「新密码」——浏览器自动填充要分开，否则会拿旧密码覆盖
+  $('amPw').setAttribute('autocomplete', c.newpw ? 'new-password' : 'current-password');
+  // 切换模式时清掉上一模式的密码残留：别把登录密码带进注册，也别让人误提交旧值
+  if (mode !== 'pw') { $('amPw').value = ''; $('amPw2').value = ''; }
+  if (!c.code) $('amCode').value = '';
+  const alt = $('amAlt');
+  alt.dataset.goto = c.alt[0];
+  alt.textContent = c.alt[1];
   document.querySelectorAll('#amTabs button').forEach(b => {
     b.classList.toggle('on', b.dataset.amtab === mode);
   });
@@ -164,14 +168,11 @@ function setAmMode(mode) {
 
 let sendTimer = null;
 
-function openLogin(mode = 'code') {
+function openLogin(mode = 'pw') {
   $('authModal').hidden = false;
   setAmMode(mode);
   setTimeout(() => {
-    const f = mode === 'pw' ? $('amPw')
-      : (mode === 'setpw' && !$('amOldRow').hidden) ? $('amOld')
-      : $('amEmail');
-    f.focus({ preventScroll: true });
+    $('amEmail').focus({ preventScroll: true });
   }, 60);
 }
 
@@ -260,14 +261,6 @@ async function submitAuth() {
   const label = btn.textContent;
   btn.textContent = '处理中…';
   try {
-    if (mode === 'setpw') {
-      const body = { password: readPw(true) };
-      if (!$('amOldRow').hidden) body.old_password = $('amOld').value;
-      await postAuth('/api/auth/set-password', body);
-      amSay('密码设好了，下次直接用密码登录', true);
-      setTimeout(closeLogin, 900);
-      return;
-    }
     if (!email) { amSay('先填邮箱'); return; }
 
     let d;
@@ -275,18 +268,16 @@ async function submitAuth() {
       d = await postAuth('/api/auth/register', {
         email, code: $('amCode').value.trim(), password: readPw(true),
       });
-      afterLogin(d);
-    } else if (mode === 'pw') {
-      d = await postAuth('/api/auth/login', { email, password: $('amPw').value });
-      afterLogin(d);
+    } else if (mode === 'reset') {
+      d = await postAuth('/api/auth/reset-password', {
+        email, code: $('amCode').value.trim(), password: readPw(true),
+      });
     } else {
-      d = await postAuth('/api/auth/verify', { email, code: $('amCode').value.trim() });
-      afterLogin(d);
-      // 验证码进来的是新账号（还没设过密码）：顺手引导设一个，省得下次还要等邮件
-      if (d.is_new) {
-        setTimeout(() => openLogin('setpw'), 1200);
-      }
+      const pw = $('amPw').value;
+      if (!pw) { amSay('请输入密码'); return; }
+      d = await postAuth('/api/auth/login', { email, password: pw });
     }
+    afterLogin(d);
   } catch (e) {
     amSay(e.message);
   } finally {
@@ -298,18 +289,18 @@ async function submitAuth() {
 $('convNew').onclick = newConversation;
 $('amSend').onclick = sendCode;
 $('amGo').onclick = submitAuth;
+$('amAlt').onclick = () => setAmMode($('amAlt').dataset.goto || 'pw');
 document.querySelectorAll('#amTabs button').forEach(b => {
   b.onclick = () => setAmMode(b.dataset.amtab);
 });
 // 换行即提交：验证码框输完直接回车，密码框也是
-['amCode', 'amPw', 'amPw2', 'amOld'].forEach(id => {
+['amCode', 'amPw', 'amPw2'].forEach(id => {
   $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
 });
 $('amEmail').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
-  if (AM.mode === 'pw') $('amPw').focus();
-  else if (AM.conf[AM.mode].code) sendCode();
-  else submitAuth();
+  if (AM.conf[AM.mode].code) sendCode();
+  else $('amPw').focus();
 });
 document.querySelectorAll('[data-auth-close]').forEach(el => { el.onclick = closeLogin; });
 addEventListener('keydown', (e) => {
