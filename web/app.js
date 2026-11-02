@@ -838,7 +838,9 @@ function renderHot(items) {
     b.onclick = () => {
       document.querySelectorAll('#hotList .titem').forEach(x => x.classList.remove('on'));
       b.classList.add('on');
-      $('artInput').value = `结合「${b.dataset.obj}」这个热点写一篇，平台小红书风格`;
+      // 只写「结合这个热点写一篇」，平台交给上面的平台按钮决定。
+      // 之前这里写死了「平台小红书风格」，导致选公众号/口播稿也一律按小红书写。
+      $('artInput').value = `结合「${b.dataset.obj}」这个热点写一篇`;
       autosize($('artInput'));
       $('artHint').textContent = '已选中热点，点「生成文章」';
     };
