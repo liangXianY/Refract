@@ -88,10 +88,12 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
     用户要「看看某平台最近什么火、热榜、热搜、流行」时才用。source 可选：
     rednote=小红书、weibo=微博、zhihu=知乎、douyin=抖音、bilibili=B站、
     baidu=百度热搜、tieba=百度贴吧。
-- lookup_hot {"title": "...", "source": "..."}
+- lookup_hot {"title": "...", "source": "...", "rank": 2}
     针对榜单里的**某一条热点**，联网搜它的正文/报道，搞清楚「这条到底讲什么」。
     热榜只给标题没给内容，用户追问「XX 是怎么回事」时用这个，别用 web_search
     （裸搜标题会被同名无关内容带偏，比如「海鸥雨」裸搜会搜出契诃夫《海鸥》话剧）。
+    用户说「第 2 条」「第二条讲讲」时，直接给 rank=2 最省事（榜单从 1 数起，
+    来源取【已知信息】里那个榜单的平台）；也可以把标题原样填进 title。
 - web_search {"query": "..."}
     **泛化的网页搜索**——搜事实、概念、天气、新闻、价格、人物、事件。返回带来源链接的摘要。
     它跟「榜单」无关：用户问「XX 是什么/多少钱/怎么样」这种具体问题用它，
@@ -106,6 +108,12 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
                                     写一篇可发布的文案。走完整的规划-写作-自检迭代。正文流式输出，不用你转述
 - video_plans {"input": "..."}      为主题直接生成一条动画视频（自主创作，网页直接播放）
 - memory_recall {}                  读取用户的人设偏好和历史表现
+
+关于【已知信息】——用户消息前面如果带了这一段，说明之前几轮真的查过东西：
+- 里面列出的热榜条目、搜过的词、生成的产物，都是**真实数据**，直接引用就行
+- 用户说「第 N 条」「刚才那个」「上一篇」时，先在这一段里找对应对象，
+  **不要重新拉一遍榜单/重搜一遍**（浪费额度，而且榜单会变，反而对不上）
+- 找不到对应对象（比如已知信息里根本没有榜单）才考虑调工具；实在没有就问用户
 
 决策流程（先判断任务属于哪一类，再定工具，不是套固定流程）：
 
@@ -126,6 +134,15 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 - 明确要写文章/做视频 → 才安排 write_article / video_plans，必要时前面加取素材步骤
   （拿热榜写稿 → hot_topics；写时效性内容 → web_search；给链接写稿 → fetch_url）
 
+- **写文章前先看信息全不全**。三件事必须清楚：写什么主题、多长（短/中/长）、发哪个平台
+  （公众号 wechat / 小红书 xiaohongshu）。缺任何一项就问，别自己替用户定：
+  steps 空数组，reply 一次性把缺的都问出来（例如「主题有了，还需要确认：篇幅短中长？发公众号还是小红书？」）。
+  用户明确说了「随便/你定」才自己定。
+- **写热点类文章必须先把内容查到**。你手上只有榜单标题，标题不等于内容：
+  先从榜单里挑定那条 → lookup_hot 读正文；用户给了链接 → fetch_url 读网页；
+  通用选题 → web_search 搜一轮。拿到素材再 write_article，别只拿标题就动笔。
+- write_article 的 input 要把主题 + 素材要点一起写清楚，不能只写四个字。
+
 【没有工具能做到的，明说做不到】
 - 如果用户要的东西，上面的工具一个都做不了（比如"帮我打电话""帮我订机票""控制我的手机"），
   就 steps 空数组，reply 里直接说「这个我做不了，我能做的是 xxx」，别硬编、别假装、别硬套一个不相关的工具。
@@ -135,7 +152,7 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
 - 「看看热点」「最近有什么火的」「XX热榜/热搜」 → hot_topics（拉榜单，不是 web_search）
 - 追问某条热点「是什么/说的什么」 → lookup_hot（带 source），别裸 web_search
 - 「XX 是什么/多少钱/怎么样/为什么」这类具体问题 → web_search（跟榜单无关）
-- 「结合热点写小红书/公众号」 → hot_topics（+可选 lookup_hot）再 write_article
+- 「结合热点写小红书/公众号」 → hot_topics → lookup_hot 读正文 → write_article（三步，缺一不可）
 - 「分析/读一下 + 链接」 → fetch_url
 - 复合任务最多 3 步，按依赖排序
 - write_article 的 input 要写清楚完整要求，不能只写四个字
@@ -270,6 +287,9 @@ async def _run_fetch_url(args: dict, llm, keeper, task_id, emit, results) -> dic
     return {
         "tool": "fetch_url",
         "summary": f"《{page.title[:50]}》 {page.site} · {page.word_count} 字",
+        "url": url,
+        "title": page.title[:80],
+        "words": page.word_count,
         "material": to_prompt_material(page, 5000),
     }
 
@@ -302,6 +322,7 @@ async def _run_web_search(args: dict, llm, keeper, task_id, emit, results) -> di
         "tool": "web_search",
         "summary": f"「{query[:24]}」搜到 {len(res.items)} 条资料",
         "query": query,
+        "hits": [{"title": r["title"], "url": r["url"]} for r in res.items],
         "material": to_material(res),  # 带 URL 来源，写作时事实点可溯源
     }
 
@@ -338,59 +359,32 @@ async def _run_hot_topics(args: dict, llm, keeper, task_id, emit, results) -> di
     }
 
 
-def _ngrams(s: str) -> set[str]:
-    """中文按 2 字滑窗切，英文数字按连续片段保留。
-
-    不引分词器（依赖重、还要维护词表），2-gram 足够做「跑没跑偏」的判断：
-    真正相关的结果，和标题共享的二字片段比例会明显更高。
-    """
-    s = re.sub(r"[^\u4e00-\u9fff0-9a-zA-Z]", "", s or "")
-    if len(s) < 2:
-        return {s} if s else set()
-    return {s[i:i + 2] for i in range(len(s) - 1)}
-
-
-def _relevance(title: str, item: dict) -> float:
-    """搜索结果对热榜标题的覆盖度（0~1）。
-
-    实测踩过的坑：搜「将有2名中国人登陆月球」返回一堆 Reddit 上
-    Wells Fargo 银行账户的帖子——Tavily 对预测性中文长句索引很差。
-    这种跑偏结果的 2-gram 交集基本为 0，能直接识别出来。
-    """
-    q = _ngrams(title)
-    if not q:
-        return 0.0
-    blob = f"{item.get('title', '')} {item.get('content', '')}"
-    return len(q & _ngrams(blob)) / len(q)
-
-
-# 低于这个覆盖度就当没搜到。0.12 是试出来的：
-# 真正相关的结果通常 >0.2，完全跑偏的在 0.05 以下，中间地带极少
-_RELEVANCE_FLOOR = 0.12
-
-
 async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> dict:
-    """针对某条热点标题搜正文：热榜只有标题+热度，要「理解」这条热点讲什么，
-    必须联网读详情。这是「了解热点」和「拿热点写稿」都能用的公共步骤。"""
-    from ..pipeline.search import SearchError, SearchResult, search, to_material
+    """读某条热点的详情。热榜只给标题，要弄清「这条到底讲什么」必须联网读报道。
+
+    title 可以由模型直接给，也可以只给 rank——rank 指向之前拉过的榜单
+    （本轮 results 里的，或上一轮存进会话状态的），用户说「第二条讲讲」就走这条。
+    """
+    from ..pipeline.search import SearchError, search, to_material
 
     title = str(args.get("title") or "").strip()
     source = str(args.get("source") or "").strip()
-    if not title:
-        # 允许从前序 hot_topics 里自动取：用户说「第一条讲讲」时 title 可能是空的
-        prev = next((r for r in results if r.get("tool") == "hot_topics"), None)
-        idx = args.get("rank")
-        if prev and idx is not None:
+    rank = args.get("rank", args.get("index"))
+
+    if not title and rank is not None:
+        # rank 从 1 数起：用户说的「第二条」就是 items[1]
+        prev = next((r for r in results if r.get("tool") == "hot_topics" and r.get("items")), None)
+        if prev:
             try:
-                title = prev["items"][int(idx)]["title"]
+                title = prev["items"][int(rank) - 1]["title"]
                 source = source or prev.get("source", "")
-            except (IndexError, KeyError, ValueError):
+            except (IndexError, KeyError, TypeError, ValueError):
                 title = ""
     if not title:
-        raise ToolError("缺 title（要读哪条热点）")
+        raise ToolError("缺 title（要读哪条热点；也可以给 rank=第几条）")
 
-    # 关键：裸搜标题会被无关内容带偏（「海鸥雨」裸搜会搜出契诃夫《海鸥》）。
-    # 必须带上平台语境，让搜索引擎知道这是「某平台的某条热点」，而不是泛泛的词。
+    # 裸搜标题容易被无关内容带偏（「海鸥雨」裸搜会搜出契诃夫《海鸥》话剧），
+    # 带上平台语境，让搜索引擎知道这是「某平台的某条热点」。
     source_hint = {"rednote": "小红书", "weibo": "微博", "zhihu": "知乎",
                    "douyin": "抖音", "bilibili": "B站", "baidu": "百度",
                    "tieba": "百度贴吧"}.get(source, "")
@@ -400,38 +394,25 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
     except SearchError as exc:
         await emit({"type": "tool_detail", "lines": [f"搜索热点详情失败：{exc}"]})
         return {"tool": "lookup_hot", "summary": f"「{title[:20]}」详情搜索失败",
-                "material": "", "found": False}
+                "query": query, "material": "", "found": False}
 
-    # 相关性过滤：搜索跑偏时宁可明说「没找到」，也别把无关内容当素材喂给模型。
-    # 线上踩过：查「将有2名中国人登陆月球」返回一堆 Wells Fargo 银行帖子，
-    # 模型只能对着一堆无关材料硬编，或者如实说「搜不到但返回了这些」。
-    scored = sorted(((_relevance(title, it), it) for it in res.items),
-                    key=lambda x: -x[0])
-    relevant = [it for s, it in scored if s >= _RELEVANCE_FLOOR]
-    if not relevant:
-        best = scored[0][0] if scored else 0.0
-        await emit({"type": "tool_detail", "lines": [
-            f"搜到 {len(res.items)} 篇，最高相关度仅 {best:.0%}，"
-            f"和「{title[:16]}」对不上，判定为未找到可靠信息"
-        ]})
-        return {
-            "tool": "lookup_hot",
-            "summary": f"「{title[:20]}」没搜到可靠详情",
-            "material": "",
-            "found": False,
-        }
+    if not res.items:
+        await emit({"type": "tool_detail", "lines": [f"搜「{query[:30]}」没有任何返回"]})
+        return {"tool": "lookup_hot", "summary": f"「{title[:20]}」没搜到详情",
+                "query": query, "material": "", "found": False}
 
-    kept = SearchResult(query=res.query, items=relevant, images=res.images)
     await emit({"type": "tool_detail", "lines": [
-        f"搜「{query[:30]}」命中 {len(relevant)}/{len(res.items)} 篇"
-        f"（最高相关度 {scored[0][0]:.0%}）"
+        f"{r['title'][:46]} — {r['url'][:40]}" for r in res.items[:6]
     ]})
     return {
         "tool": "lookup_hot",
-        "summary": f"「{title[:20]}」详情",
-        "material": to_material(kept),
+        "summary": f"「{title[:20]}」详情（{len(res.items)} 篇）",
+        "query": query,
+        "hits": [{"title": r["title"], "url": r["url"]} for r in res.items],
+        "material": to_material(res),
         "found": True,
     }
+
 
 
 def brief_img_hint(args: dict, body: str) -> str:
@@ -441,11 +422,30 @@ def brief_img_hint(args: dict, body: str) -> str:
 
 async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.engine import run_pipeline
-    from ..pipeline.search import search
+    from ..pipeline.search import extract_query, search, to_material
 
     input_text = str(args.get("input") or "")
     # 前序工具的素材自动注入：搜索结果 / 链接正文，都带来源
     extras = [r["material"] for r in results if r.get("material")]
+    if not extras and not llm.cfg.mock:
+        # 用户直接说「写一篇关于 XX」时没有前序素材，得自己搜一次。
+        # 搜到的东西一律给模型，相关与否让模型自己判断——代码算相似度
+        # 判不准（同义词、缩写、跨语言都算不准），模型看标题和来源更靠谱。
+        q = extract_query(input_text)
+        if q:
+            try:
+                await emit({"type": "stage", "stage": "fetch",
+                            "label": f"检索「{q[:18]}」相关资料"})
+                sr = await search(q, max_results=5)
+                if sr.items:
+                    extras = [to_material(sr)]
+                    await emit({"type": "note",
+                                "text": f"已检索到 {len(sr.items)} 篇资料，写稿时参考"})
+                else:
+                    await emit({"type": "note",
+                                "text": "没检索到资料，基于公开常识写，别编细节"})
+            except Exception:
+                pass  # 检索是增强不是关键路径，失败照常写
     if extras:
         input_text = (
             input_text
@@ -465,60 +465,32 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
         history_hint=keeper.reflect_hint(),
     )
 
-    # 联网搜图配文：
-    # a) 正文里有配图占位（Writer 按引导插的）→ 搜真图按序替换
-    # b) 一个占位都没有（模型没按引导写）→ 主动搜一张插到第一个小节后
-    #    「这篇文章没有图片」就是这么来的——不能指望模型每次都记得插图
+    # 配图和文章板块走同一套（images.fill_placeholders）：
+    # 占位→真图、图不够→补到 3 张、多张候选→模型判断相关性。
+    # 之前这里另写了一份「用外链不落盘」的版本，两边行为迟早漂。
     body = result["body"]
-    import re as _re
+    try:
+        from ..config import settings as _settings
+        from ..pipeline import images as _images
 
-    if not llm.cfg.mock and "![" in body:
-        # 占位 alt 就是搜索关键词（Writer 被要求写成描述性短语）
-        alts = [a for a in _re.findall(r"!\[([^\]]*)\]\((?:prompt:)?[^)]*\)", body) if a.strip()]
-        query = " ".join(alts[:2]) or str(args.get("input") or "")[:80]
-        try:
-            img_res = await search(query[:120], max_results=6, with_images=True)
-            # url + 官方描述：description 比 alt 更能说清图里是什么
-            pool = [{"url": i["url"], "desc": (i.get("description") or "").strip()}
-                    for i in img_res.images if i.get("url")]
-
-            # a) 占位 → 真图；alt 换成图片描述（没描述保留原 alt）
-            n = min(len(pool), body.count("](prompt:"))
-            if n:
-                used = pool[:n]
-                it = iter(used)
-                body = _re.sub(
-                    r"!\[([^\]]*)\]\(prompt:[^)]*\)",
-                    lambda m: (lambda u: f"![{(u['desc'] or m.group(1)).strip()[:60]}]({u['url']})")(next(it)),
-                    body,
-                )
-                pool = pool[n:]
-
-            # b) 还剩图且正文图少于 3 张 → 再插到后面的小节（一篇文章一张图像硬凑的）
-            have = len(_re.findall(r"!\[", body))
-            if pool and have < 3:
-                heads = list(_re.finditer(r"^## .+$", body, _re.M))
-                spots = [h.end() for h in heads]
-                inserted = 0
-                for idx in range(2, len(spots), 2):  # 中后段的小节
-                    if inserted >= len(pool) or have + inserted >= 3:
-                        break
-                    u = pool[inserted]
-                    alt = (u["desc"] or "配图")[:60]
-                    img_md = f"\n\n![{alt}]({u['url']})\n"
-                    at = spots[idx]
-                    body = body[:at] + img_md + body[at:]
-                    # 插入使后续偏移变化，重算
-                    heads = list(_re.finditer(r"^## .+$", body, _re.M))
-                    spots = [h.end() for h in heads]
-                    inserted += 1
-        except Exception:
-            pass  # 搜图任何失败都保持原稿，不阻塞  # 搜图失败保占位，不阻塞出稿
+        if _images.enabled() and not llm.cfg.mock:
+            body2, n_ok = await _images.fill_placeholders(
+                body, _settings.data_dir / "images" / task_id,
+                topic=(result.get("brief") or {}).get("topic", ""), llm=llm,
+            )
+            if n_ok:
+                body = body2
+                await emit({"type": "note", "text": f"配图 {n_ok} 张（相关性已过滤）"})
+    except Exception:
+        pass  # 配图是锦上添花，失败保持原稿
 
     result["body"] = body
     return {
         "tool": "write_article",
         "summary": f"{result['word_count']} 字 · {len(result['rounds'])} 轮 · 最终 {result.get('final_score')} 分",
+        "task_id": task_id,
+        "topic": (result.get("brief") or {}).get("title", ""),
+        "platform": str(args.get("platform") or "wechat"),
         "result": result,
     }
 
@@ -535,6 +507,12 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> d
     from ..pipeline.brief import plan as plan_brief
 
     brief = await plan_brief(llm, str(args.get("input") or ""), "video", "medium")
+    await emit({
+        "type": "decision", "stage": "brief",
+        "label": f"内容简报：{brief.topic}",
+        "lines": [f"角度：{brief.angle or '（未定）'}", f"受众：{brief.audience}",
+                  f"事实点：{len(brief.facts)} 条 · 大纲 {len(brief.outline)} 节"],
+    })
 
     # 自动定视觉方向（取推荐首套），失败用默认方案兜底
     plan_obj: VideoPlan | None = None
@@ -553,7 +531,7 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> d
         )
 
     await emit({"type": "stage", "stage": "render", "label": "选配方卡 · 逐镜头生成动画"})
-    res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id)
+    res = await remotion_video.generate(llm, brief, plan_obj, settings.data_dir, task_id, emit=emit)
 
     # 首选模型不可用、已降级——立刻告诉用户，别让他纳闷画面质量怎么变了
     if res.fallback:
@@ -565,6 +543,8 @@ async def _run_video_plans(args: dict, llm, keeper, task_id, emit, results) -> d
     return {
         "tool": "video_plans",
         "summary": f"《{brief.topic[:24]}》{len(res.shots)} 镜头 · {res.duration_s:.1f}s",
+        "task_id": task_id,
+        "topic": brief.topic,
         "video_url": f"/v/{task_id}" if build_dir else None,
         "project_dir": str(res.project_dir),
         "model": res.model,
@@ -621,12 +601,16 @@ async def handle_chat(
     session_id: str = "",
     context: str = "",
     ip: str = "",
+    prior_results: list[dict] | None = None,
 ) -> dict:
     """对话入口。返回结果 dict（给留痕用）。
 
-    session_id + context：跨轮上下文。上一轮拉过热榜，这一轮追问「海鸥雨
-    是什么」，planner 靠 context 知道「海鸥雨」是刚拉过的热点，才会正确
-    用 lookup_hot 而不是裸搜。
+    context：对话前文 + 已知信息（热榜条目、搜过的词、产物链接），
+    由 session_memory.context() 拼好传进来。用户追问「第二条」时，
+    planner 手里有那 10 条标题，才不会说找不到。
+
+    prior_results：上一轮的事实还原成的伪工具结果，塞进 results 开头。
+    这样 lookup_hot 只给 rank 也能定位到具体那条热点。
     """
     t0 = time.time()
 
@@ -656,7 +640,9 @@ async def handle_chat(
         return {"kind": "reply", "route": "planner", "reply": reply, "elapsed_ms": int((time.time() - t0) * 1000)}
 
     # --- 第三层：执行 ---
-    results: list[dict] = []
+    # 开头先垫上一轮的事实（热榜条目等），让 lookup_hot 能按 rank 找到那条；
+    # 它们标了 prior=True，收尾时不参与总结，也不会被当成新素材。
+    results: list[dict] = [dict(r, prior=True) for r in (prior_results or [])]
     failed: list[str] = []
     for i, step in enumerate(plan.steps):
         spec = TOOLS.get(step.tool)
@@ -693,15 +679,18 @@ async def handle_chat(
             await emit({"type": "step_end", "i": i, "tool": step.tool, "status": "failed", "summary": msg[:160]})
 
     # --- 收尾：把工具产出整理成答复（流式） ---
+    # 只收本轮跑出来的（fresh）——上一轮的热榜/搜索只是给模型做指代用，
+    # 不该重复列一遍，更不能当成这一轮的结论。
+    fresh = [r for r in results if not r.get("prior")]
     # 文章步已经在执行中流式输出过正文，这里只补产物卡；
     # 其余工具（热点/解析）没有正文输出，收尾生成完整答复。
-    art = next((r for r in results if r["tool"] == "write_article"), None)
+    art = next((r for r in fresh if r["tool"] == "write_article"), None)
     if art:
         await emit(
             {"type": "artifact", "artifact": "article", "url": f"/r/{task_id}", "summary": art["summary"]}
         )
 
-    plans_step = next((r for r in results if r["tool"] == "video_plans"), None)
+    plans_step = next((r for r in fresh if r["tool"] == "video_plans"), None)
     if plans_step:
         # 直接生成完成：emit video 事件，前端直接嵌播放器
         await emit({
@@ -716,7 +705,7 @@ async def handle_chat(
     # 是否生成文字答复：默认「有内容就总结」（泛化，不依赖模型输出字段），
     # planner 明确说 summarize=false 时才跳过（写稿/出视频这种工具自己输出的场景）。
     material_results = [
-        r for r in results
+        r for r in fresh
         # lookup_hot 即使没搜到也要留下：得让模型知道「查过了、确实没有」，
         # 否则它会当没发生过，转而凭标题瞎编
         if r.get("material") or r.get("items") or r.get("tool") == "lookup_hot"
@@ -753,6 +742,8 @@ async def handle_chat(
             system="你是 Refract 的助手。基于工具返回的结果，用中文给用户一个干脆的答复。"
             "用户问什么就答什么（问天气就报天气、问新闻就说新闻、问对比就列对比），"
             "直接回答，别讲流程。列表类就按要点列，别加套话开头（不要'好的''当然'）。"
+            "搜索结果里可能混着不相干的内容——先看标题和来源判断是不是同一件事，"
+            "对不上就别引用，直接说「没查到可靠信息」，别硬凑。"
             "控制在 400 字内。如果结果里有 GitHub 仓库或热点，可以提示用户「要写成稿就说一声」。",
             user=f"用户问的是：\n{text}\n\n工具结果：\n" + "\n\n".join(brief_lines),
             max_tokens=2400,  # deepseek-flash 是推理模型，reasoning 会和正文抢额度，900 会把答复拦腰截断
@@ -770,8 +761,8 @@ async def handle_chat(
     return {
         "kind": "task",
         "route": "planner",
-        "steps": [{"tool": r["tool"], "summary": r["summary"], "elapsed_ms": r["elapsed_ms"]} for r in results],
+        "steps": [{"tool": r["tool"], "summary": r["summary"], "elapsed_ms": r["elapsed_ms"]} for r in fresh],
         "failed": failed,
         "elapsed_ms": int((time.time() - t0) * 1000),
-        "results": results,  # 全量给上层：write_article 的 result 里带 body/brief，留痕要用
+        "results": fresh,  # 全量给上层：write_article 的 result 里带 body/brief，留痕要用
     }

@@ -393,6 +393,32 @@ function miniLine(flow, label, text, cls = '') {
   return el;
 }
 
+// 模型决策记录：剧本、每镜选卡、闸门拦了什么、为什么落模板。
+// 用户不干涉生成过程，但要能回看模型每一步的判断——所以一条条写下来，可折叠。
+function decisionRow(scope, ev) {
+  if (!scope) return;
+  let wrap = scope.querySelector('.dcard');
+  if (!wrap) {
+    wrap = document.createElement('div');
+    wrap.className = 'dcard';
+    wrap.innerHTML = `<div class="dc-h">模型决策记录<span class="dc-n">0</span><span class="dc-caret"></span></div>
+      <div class="dc-body"></div>`;
+    const flip = () => wrap.classList.toggle('folded');
+    wrap.querySelector('.dc-h').onclick = flip;
+    scope.appendChild(wrap);
+    scope.hidden = false;
+  }
+  const warn = ev.status === 'fallback' || ev.status === 'warn';
+  const row = document.createElement('div');
+  row.className = 'dc-row' + (warn ? ' warn' : '');
+  row.innerHTML = `<b>${esc(ev.label || '')}</b>`
+    + (ev.lines || []).map(l => `<span>${esc(l)}</span>`).join('');
+  const body = wrap.querySelector('.dc-body');
+  body.appendChild(row);
+  wrap.querySelector('.dc-n').textContent = body.children.length;
+  if (chatlog) chatlog.scrollTop = chatlog.scrollHeight;
+}
+
 function planCard(planBox, steps) {
   const el = document.createElement('div');
   el.className = 'plancard';
@@ -467,6 +493,10 @@ function makeTurn() {
       }
       case 'stage':
         miniLine(flow, ev.stage.toUpperCase(), ev.label, ev.stage === 'reflect' ? 'hl' : '');
+        break;
+      case 'decision':
+        // 模型这一步的判断（简报/剧本/选卡/闸门），用户看得到才叫「自主但可解释」
+        decisionRow(flow, ev);
         break;
       case 'reflection':
         miniLine(flow, `第 ${ev.reflection.round} 轮自检`, `${ev.reflection.total} 分 · ${ev.reflection.repair_action.toUpperCase()}`, 'hl');
@@ -934,6 +964,7 @@ async function genVideo() {
     const done = await runTask(
       { input: text, url, platform: 'video' },
       (ev) => {
+        if (ev.type === 'decision') decisionRow($('playerBox'), ev);
         if (ev.type === 'stage') {
           const tx = document.getElementById('pstageTx');
           if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
@@ -985,6 +1016,8 @@ async function genVideo() {
     );
 
     const d = done.degraded;
+    // 决策记录不能随成品一起被覆盖掉——用户回头还要看模型当时怎么想的
+    const decs = $('playerBox').querySelector('.dcard');
     $('playerBox').innerHTML = `
       <div class="prow">
         <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
@@ -992,6 +1025,7 @@ async function genVideo() {
         <button class="ghost" id="pBack">重新生成</button>
       </div>
       <iframe src="${done.url}" title="视频成品"></iframe>`;
+    if (decs) $('playerBox').appendChild(decs);
     clearInterval(window.__vTimer);
     document.getElementById('pBack').onclick = () => {
       $('playerBox').hidden = true;
@@ -1185,6 +1219,7 @@ async function renderVideo(idx) {
     const done = await runTask(
       { input: $('vidInput').value.trim(), url: $('vidUrl').value.trim(), platform: 'video', plan },
       (ev) => {
+        if (ev.type === 'decision') decisionRow($('playerBox'), ev);
         if (ev.type === 'stage') {
           const tx = document.getElementById('pstageTx');
           if (tx) tx.textContent = ev.label + (ev.model ? ` · ${ev.model}` : '');
@@ -1228,6 +1263,7 @@ async function renderVideo(idx) {
     );
 
     const d = done.degraded;
+    const decs2 = $('playerBox').querySelector('.dcard');
     $('playerBox').innerHTML = `
       <div class="prow">
         <a href="${done.url}" target="_blank" rel="noopener">新窗口打开</a>
@@ -1235,6 +1271,7 @@ async function renderVideo(idx) {
         <button class="ghost" id="pBack">换一套</button>
       </div>
       <iframe src="${done.url}" title="视频成品"></iframe>`;
+    if (decs2) $('playerBox').appendChild(decs2);
     clearInterval(window.__vTimer);
     document.getElementById('pBack').onclick = () => {
       $('playerBox').hidden = true;

@@ -594,8 +594,26 @@ export default function Shot@@N@@({ title, accent, accent2, bg }: { title: strin
 """
 
 
+async def _decide(emit, stage: str, label: str, lines: list[str] | None = None, **extra) -> None:
+    """把模型这一步的决策推给前端。
+
+    用户不干涉生成过程，但要看得到每一步在想什么：剧本长什么样、这个镜头选了
+    哪张卡、闸门拦了什么、为什么落模板。emit 缺省时静默（脚本/测试直接调）。
+    """
+    if emit is None:
+        return
+    ev = {"type": "decision", "stage": stage, "label": label}
+    if lines:
+        ev["lines"] = [str(x)[:160] for x in lines[:8]]
+    ev.update(extra)
+    try:
+        await emit(ev)
+    except Exception:
+        pass
+
+
 async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: ContentBrief,
-                     history: list[dict]) -> Shot:
+                     history: list[dict], emit=None) -> Shot:
     from .styles import get_style
 
     st = get_style(plan.style)
@@ -620,6 +638,8 @@ async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: Content
     history.append({"shot": shot.idx, "card": shot.card, "attempt": 1,
                     "ok": not failures, "failures": failures, "chars": len(tsx)})
     if failures:
+        await _decide(emit, "shot_gate", f"镜头 {shot.idx:02d} 未过闸门，回炉重写",
+                      [f"问题：{f}" for f in failures[:4]], status="warn")
         tsx2, _p2 = await llm.complete(
             system=SHOT_SYSTEM, user=user + "\n\n" + SHOT_REPAIR.format(failures="；".join(failures)),
             max_tokens=4000, route="video")
@@ -634,6 +654,8 @@ async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: Content
                     .replace("@@TEXT@@", text))
         shot.used_fallback = True
         shot.gate_failures = failures2
+        await _decide(emit, "shot_fallback", f"镜头 {shot.idx:02d} 二次仍不过，落内置模板",
+                      [f"问题：{f}" for f in failures2[:4]], status="warn")
         return shot
 
     shot.tsx, shot.gate_failures = tsx, []
@@ -919,7 +941,7 @@ async def bundle_project(project_dir: Path) -> Path | None:
 # ---------------------------------------------------------------- 主入口
 
 async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
-                   data_dir: Path, task_id: str) -> RemotionResult:
+                   data_dir: Path, task_id: str, emit=None) -> RemotionResult:
     from .sfx import render_sfx
     from ..llm import fallback_info, reset_fallback
 
@@ -927,6 +949,14 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
     provider = llm.provider("video")
     # 开新一轮前清掉上一轮的降级记录（同一协程里连着跑多次时不会串）
     reset_fallback()
+
+    # 视觉方向也是模型定的，先亮出来——用户看得到「为什么是这种风格」
+    await _decide(emit, "plan", f"视觉方案：{plan.name}", [
+        f"风格：{plan.style}",
+        f"概念：{plan.concept}",
+        f"配色：{' / '.join(plan.palette or [])}",
+        f"定这个方向的原因：{plan.why}",
+    ])
 
     # 1) 镜头映射
     menu = _index_menu()
@@ -943,10 +973,29 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
     except Exception:
         shots = _fallback_shots(brief, plan)
         history.append({"stage": "mapping", "fallback": True})
+        await _decide(emit, "script_fallback", "分镜没生成出来，改用内置镜头结构",
+                      [f"兜底镜头数：{len(shots)}"], status="warn")
+
+    # 剧本：每个镜头的卡、时长、屏幕文字，全亮给用户
+    await _decide(
+        emit, "script", f"剧本（{len(shots)} 个镜头 / {sum(s.duration_s for s in shots):.1f}s）",
+        [f"镜头{s.idx:02d}｜{s.card or '无卡'}｜{s.duration_s:.1f}s｜{s.screen_text}"
+         f"｜{s.narration}" for s in shots],
+        shots=[{"idx": s.idx, "card": s.card, "duration": s.duration_s,
+                "screen_text": s.screen_text, "narration": s.narration} for s in shots],
+    )
 
     # 2) 逐镜头实现
     for s in shots:
-        await _impl_shot(llm, s, plan, brief, history)
+        await _decide(emit, "shot_start", f"镜头 {s.idx:02d} 开始实现",
+                      [f"配方卡：{s.card or '无（单焦点定版）'}", f"文案：{s.screen_text}"])
+        await _impl_shot(llm, s, plan, brief, history, emit=emit)
+        await _decide(
+            emit, "shot_done",
+            f"镜头 {s.idx:02d} " + ("落模板" if s.used_fallback else "通过"),
+            [f"{len(s.tsx)} 字符 · {s.duration_s:.1f}s"],
+            status="fallback" if s.used_fallback else "ok",
+        )
 
     # 3) 组装 + SFX（同 task_id 重跑时只清生成产物，保留 node_modules——
     #    整目录 rmtree 会把依赖一起删，重装要一两分钟）
@@ -977,6 +1026,10 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
                       stats={"shots": len(shots), "sfx": sfx_files,
                              "fallbacks": sum(1 for s in shots if s.used_fallback),
                              "duration_s": round(frame_cursor, 2)})
+    await _decide(emit, "gate", "工程闸门：" + ("全部通过" if gate.ok else "有问题"),
+                  (gate.failures or [f"镜头 {len(shots)} 个 · 音效 {sfx_files} 个 · "
+                                     f"总长 {frame_cursor:.1f}s"]),
+                  status="ok" if gate.ok else "warn")
 
     # 降级信息：首选 provider 挂了就记下来（上层给用户提示 + 留痕记实际用的模型）
     fb = fallback_info()

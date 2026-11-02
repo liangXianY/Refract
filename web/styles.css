@@ -940,6 +940,28 @@ textarea::placeholder{color:var(--dim)}
 .chatplayer a{font-size:var(--fs-micro);color:var(--accent-ink);text-decoration:none}
 .chatplayer .degrade{font-size:10px;color:var(--warn)}
 
+/* 模型决策记录：剧本 / 选卡 / 闸门 / 落模板，一条条列出来。
+   默认展开——用户要的就是「看得到模型每一步想了什么」；条数多了再手动收 */
+.dcard{border:1px solid var(--line);border-radius:var(--r-m);background:var(--surface-2);
+  margin:8px 0;overflow:hidden}
+.dc-h{display:flex;align-items:center;gap:7px;cursor:pointer;user-select:none;
+  padding:7px 11px;font-size:10px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase}
+.dc-h:hover{color:var(--accent-ink)}
+.dc-n{font-family:var(--font-mono);background:var(--line);color:var(--ink-2);
+  border-radius:999px;padding:0 6px;font-size:9px;letter-spacing:0}
+.dc-caret{width:7px;height:7px;margin-left:auto;border-right:2px solid var(--dim);
+  border-bottom:2px solid var(--dim);transform:rotate(-135deg);transition:transform var(--dur-1)}
+.dcard.folded .dc-caret{transform:rotate(45deg)}
+.dcard.folded .dc-body{display:none}
+.dc-body{padding:0 11px 8px;display:flex;flex-direction:column;gap:6px;
+  max-height:260px;overflow-y:auto}
+.dc-row{display:flex;flex-direction:column;gap:1px;font-size:10px;color:var(--muted);
+  line-height:1.65;padding-left:10px;position:relative;font-family:var(--font-mono)}
+.dc-row::before{content:"";position:absolute;left:0;top:7px;width:4px;height:4px;border-radius:50%;background:var(--dim)}
+.dc-row b{font-weight:600;color:var(--ink-2);font-family:var(--font-sans,inherit)}
+.dc-row.warn::before{background:var(--warn)}
+.dc-row.warn b{color:var(--warn)}
+
 .bnote{margin-bottom:9px;padding:7px 10px;border-radius:var(--r-s);background:var(--accent-faint);
   font-size:10px;color:var(--ink-2);line-height:1.7}
 .bnote b{color:var(--accent-ink)}

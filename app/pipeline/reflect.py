@@ -39,6 +39,26 @@ issues 最多 4 条，按严重程度排序。"""
 _NUM = re.compile(r"\d+(?:\.\d+)?\s*(?:%|％|倍|万|千|亿|分钟|秒|小时|天|人|条|次|篇|元|GB|MB)")
 
 
+def _plain(s: str) -> str:
+    """去掉标点和空白，只留字，用于比对标题和 CTA（"01. 为什么" ≡ "为什么"）。"""
+    return re.sub(r"[^\u4e00-\u9fff0-9a-zA-Z]", "", s or "").lower()
+
+
+def _similar(a: str, b: str) -> float:
+    """两段文字的相似度（0~1）。用标准库 difflib，不引分词器、不搞词表。"""
+    from difflib import SequenceMatcher
+
+    a, b = _plain(a), _plain(b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+# 结尾出现这些词，就算做了行动号召（不同平台说法不一样，不要求逐字复述）
+_CTA_WORDS = ("关注", "点赞", "转发", "留言", "评论", "收藏", "私信", "扫码",
+              "点击", "试试", "评论区", "在看", "分享给", "加入", "报名", "咨询")
+
+
 def lint(brief: ContentBrief, body: str) -> list[tuple[str, bool]]:
     """L1 + L2：确定性检查，成本为零。
 
@@ -46,6 +66,11 @@ def lint(brief: ContentBrief, body: str) -> list[tuple[str, bool]]:
     分级很重要：第一版我把"数字找不到出处"当阻断，结果正文里
     "三步""5 分钟"这类常规表述全被命中，一次报 6 条，把 75 分的稿子
     直接打成 replan，白烧一轮成本。误报率高的规则只能做提示，不能做阻断。
+
+    这一版把三条误报最高的规则改了：
+    - 漏节：原来数 `## ` 的条数，模型换个标题写法就误判 → 改成标题模糊匹配
+    - CTA：原来比 `cta[:8] not in body`，模型几乎不会逐字复述 → 改成看结尾语气
+    - 数字溯源：原来把图片链接/URL 里的数字也当正文数据 → 先剥掉链接再扫
     """
     out: list[tuple[str, bool]] = []
 
@@ -56,22 +81,30 @@ def lint(brief: ContentBrief, body: str) -> list[tuple[str, bool]]:
     elif brief.word_limit and n > brief.word_limit * 1.8:
         out.append((f"正文 {n} 字，超出目标 {brief.word_limit} 字太多，需要精简", True))
 
-    # L1 小节覆盖：漏节是结构问题
-    headings = re.findall(r"^##\s+(.+)$", body, flags=re.M)
-    missing = len(brief.outline) - len(headings)
-    if missing >= 2:
-        out.append((f"小节数 {len(headings)} 少于大纲要求的 {len(brief.outline)} 节", True))
-    elif missing == 1:
-        out.append((f"少了 1 节：{len(headings)} / {len(brief.outline)}", False))
+    # L1 小节覆盖：按标题相似度判断，模型改个说法不算漏节
+    headings = [h.strip() for h in re.findall(r"^#{2,3}\s+(.+)$", body, flags=re.M)]
+    missing = [s.heading for s in brief.outline
+               if not any(_similar(s.heading, h) >= 0.45 for h in headings)]
+    if len(missing) >= 2:
+        out.append((f"漏了 {len(missing)} 节：{'、'.join(missing[:2])}", True))
+    elif missing:
+        out.append((f"少了 1 节：{missing[0]}", False))
 
-    # L1 CTA
-    if brief.cta and brief.cta[:8] not in body:
-        out.append(("结尾缺少行动号召（CTA）", False))
+    # L1 CTA：只看结尾有没有号召动作，不要求复述原句
+    if brief.cta:
+        tail = body[-400:]
+        if not any(w in tail for w in _CTA_WORDS) and _similar(brief.cta, tail) < 0.1:
+            out.append(("结尾没有落到行动号召（读者不知道下一步做什么）", False))
 
     # L2 事实溯源：只提示，不阻断（误报率高）
-    sourced = " ".join(f.claim + (f.source or "") for f in brief.facts)
+    # 先剥掉图片/链接里的数字——图床文件名里的 2024、尺寸 1024 不是正文数据
+    prose = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)
+    prose = re.sub(r"https?://\S+", "", prose)
+    prose = re.sub(r"第\s*[0-9一二三四五六七八九十]+\s*[节章步条]", "", prose)
+    sourced = _plain(" ".join(f.claim + (f.source or "") for f in brief.facts))
     unsourced = [
-        h.strip() for h in set(_NUM.findall(body)) if h.replace(" ", "") not in sourced.replace(" ", "")
+        h.strip() for h in set(_NUM.findall(prose))
+        if _plain(h).replace(" ", "") not in sourced.replace(" ", "")
     ]
     if unsourced:
         sample = "、".join(unsourced[:3])

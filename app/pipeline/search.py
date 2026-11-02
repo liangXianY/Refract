@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 import httpx
@@ -34,6 +35,19 @@ def _key() -> str:
 
 def available() -> bool:
     return bool(_key())
+
+
+def extract_query(text: str) -> str:
+    """把用户输入变成搜索词。
+
+    点热榜时前端会拼成「结合「标题」这个热点写一篇」，取「」里的标题；
+    手输的整句直接丢给 Tavily——实测带指令词的整句反而更容易命中，
+    剥词（写一篇/关于/平台...）纯属自找麻烦，还容易把话题本身剥坏。
+    """
+    m = re.search(r"「([^」]{2,80})」", text or "")
+    if m:
+        return m.group(1).strip()
+    return (text or "").strip()[:120]
 
 
 async def search(

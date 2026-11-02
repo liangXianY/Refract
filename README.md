@@ -210,6 +210,33 @@ import 在白名单内、有文案、真的渲染了镜头文字、props 解构�
 闸门不追求"好看"，只保证"不是废片"——宁可给 70 分的模板片，也不给 0 分的黑屏。
 每个镜头的尝试记录（第几版、为什么没过）都会回传，前端能看到哪几镜是落模板的。
 
+### 记忆分三层，各管各的
+
+踩过的坑：只存「上一轮拉了微博 top10」这种摘要，用户追问「详细讲一下第二条」，
+模型手上一个标题都没有，只能答找不到。所以三层分开存：
+
+| 层 | 存什么 | 实现 | 为什么不用向量库 |
+|---|---|---|---|
+| 工作记忆 | 热榜 10 条（含排名/热度/链接）、搜过的词、产物链接 | `agents/session_context.py`，JSON 落盘 `data/sessions/` | 这是**结构化数据**，被「抽取成事实」后条目和链接全丢，正是要修的 bug |
+| 对话记忆 | 最近 5 轮原文 + 更早的滚动摘要 | 同上 | 摘要已经够用，不进向量库 |
+| 长期记忆 | 跨会话的用户事实与偏好（"他做自媒体，小红书要口语化"） | `agents/long_memory.py` 适配 **mem0**（可选） | 这类才需要语义检索，用现成模块 |
+
+长期记忆默认关闭，原因写在代码里：mem0 必须要 embedding 模型，而 DeepSeek 没有
+embedding 接口。实测三条路——fastembed 本地模型在这网络下下载要 12 分钟（直连 HuggingFace
+直接超时）、sentence-transformers 要 torch（2G 内存机器判死）、硅基流动 API 要 key。
+配好 key 就能开：
+
+```bash
+pip install mem0ai
+# .env
+MEM0_ENABLED=1
+MEM0_EMBED_KEY=sk-xxx                # 硅基流动，bge-m3 有免费额度
+MEM0_EMBED_BASE=https://api.siliconflow.cn/v1
+MEM0_EMBED_MODEL=BAAI/bge-m3
+```
+
+`/api/health` 的 `memory` 字段会直接告诉你开没开、为什么没开。
+
 
 ---
 
@@ -253,6 +280,10 @@ app/
   llm.py             双协议客户端：OpenAI 兼容 + Anthropic，结构化/流式/长文本
   mock.py            Mock 数据源（结构与真实调用完全一致）
   agents/            子 Agent 分工：intent / orchestrator / researcher / writer / director
+    supervisor.py    对话主 Agent：规则层 → 规划层（模型决定用哪些工具）→ 执行层
+    session_context.py 会话状态：热榜条目/搜过的词/产物 + 最近 5 轮 + 早期摘要（落盘）
+    long_memory.py   长期语义记忆适配层（mem0，可选；没配 embedding key 自动关闭）
+    memory_keeper.py 人设/偏好读写门面（SQLite）
   pipeline/
     brief.py         Planner
     compose.py       Executor
@@ -311,7 +342,9 @@ tests/
 | GET | `/api/styles` | 视频风格库 |
 | GET/POST/DELETE | `/api/memory` | 项目记忆读写 |
 
-SSE 事件：`stage / plan / step_start / step_end / tool_detail / delta / reflection / artifact / video / gate / fallback / note / done_reply / done / error / ping`
+SSE 事件：`stage / plan / step_start / step_end / tool_detail / delta / reflection / artifact / video / gate / fallback / decision / note / done_reply / done / error / ping`
+
+`decision` 是「模型这一步的判断」：视频的内容简报、剧本（每个镜头的卡/时长/屏幕文字）、选卡、闸门拦截、落模板原因，全部原样推给前端，用户在视频面板里能回看每一步。
 
 `delta` 分 `kind=reasoning`（推理过程，前端显示"思考中"）和 `kind=content`（正文，流式渲染）。
 

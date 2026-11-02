@@ -149,10 +149,10 @@ async def compose_article(
     platform: str = "wechat",
     words: str = "medium",
 ) -> str:
-    """写一篇公众号/小红书/口播稿。
+    """写一篇公众号/小红书文章。
 
     input 和 url 至少给一个。给了 url 会先抓正文当素材。
-    platform: wechat | xiaohongshu | video
+    platform: wechat | xiaohongshu
     words: short | medium | long
     """
     if not input.strip() and not url.strip():

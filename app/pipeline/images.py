@@ -129,29 +129,75 @@ async def _download_image(url: str) -> bytes | None:
         return None
 
 
-async def search_real_image(query: str, limit: int = 3) -> bytes | None:
-    """用 Tavily 搜真实图片，返回第一张能下载的。
+async def search_real_images(query: str, limit: int = 4) -> list[tuple[bytes, str]]:
+    """用 Tavily 搜真实图片，返回 [(图片二进制, 图片描述)]。
 
     对热点/新闻类文案，真实现场图比 AI 生成的更有说服力，还不花图像 API 的钱。
     代价是版权：新闻图有版权，对外正式发布前要自行确认授权，这里只做技术打通。
+
+    返回描述是为了「相关性判断」：Tavily 给的 description 说明了图里是什么，
+    没有它就只能盲选第一张，经常搜出无关的 logo、表情包、广告图。
     """
     from .search import SearchError, search
 
     q = (query or "").strip()
     if not q:
-        return None
+        return []
     try:
         res = await search(q, max_results=3, with_images=True)
     except SearchError:
-        return None
+        return []
+    out: list[tuple[bytes, str]] = []
     for img in res.images[:limit]:
         data = await _download_image(str(img.get("url") or ""))
         if data:
-            return data
-    return None
+            out.append((data, str(img.get("description") or "").strip()))
+    return out
 
 
-async def _pick(desc: str, prompt: str) -> bytes | None:
+async def search_real_image(query: str, limit: int = 3) -> bytes | None:
+    """只要一张：兼容老调用方。"""
+    pool = await search_real_images(query, limit=limit)
+    return pool[0][0] if pool else None
+
+
+_IMAGE_PICK_SYSTEM = """你在给一篇中文文章选配图。给你图位说明和几张候选图（带图片描述），
+挑出唯一一张和说明真的相关、适合放进文章的；都不合适就返回 -1。
+只输出 JSON：{"pick": 数字}"""
+
+
+async def _choose(llm, desc: str, topic: str, pool: list[tuple[bytes, str]]) -> bytes | None:
+    """从候选图里选一张。单张直接返回；多张交模型判断相关性。
+
+    为什么交模型：图和文字的相关性没法用词面相似度算（同义词、示意图、
+    图标和实物都会误判）。模型看一眼描述就能判断，成本是一次几十 token 的调用，
+    比往文章里塞一张不相关的图便宜得多。
+    """
+    if not pool:
+        return None
+    if len(pool) == 1 or llm is None or getattr(llm.cfg, "mock", False):
+        return pool[0][0]
+    menu = "\n".join(
+        f"{i}. {d or '（无描述）'}" for i, (_data, d) in enumerate(pool)
+    )
+    try:
+        data = await llm.structured(
+            system=_IMAGE_PICK_SYSTEM,
+            user=f"文章主题：{topic or '（未提供）'}\n图位说明：{desc}\n\n候选图：\n{menu}",
+            max_tokens=800,
+            temperature=0.1,
+            route="text",
+            validate=lambda d: None if isinstance(d.get("pick"), int) else (_ for _ in ()).throw(ValueError("pick")),
+        )
+        idx = int(data.get("pick", 0))
+    except Exception:
+        return pool[0][0]  # 判断失败就退回第一张，不卡住配图
+    if idx < 0 or idx >= len(pool):
+        return None  # 模型明确说都不合适 → 这篇就不放这张图
+    return pool[idx][0]
+
+
+async def _pick(desc: str, prompt: str, *, llm=None, topic: str = "") -> bytes | None:
     """按 IMAGE_SOURCE 决定这张图从哪来。
 
     auto（默认）：先用 Tavily 搜真实图，搜不到再 AI 生成
@@ -160,7 +206,8 @@ async def _pick(desc: str, prompt: str) -> bytes | None:
     """
     src = _source()
     if src in ("auto", "tavily"):
-        data = await search_real_image(desc)
+        pool = await search_real_images(desc)
+        data = await _choose(llm, desc, topic, pool)
         if data:
             return data
         if src == "tavily":
@@ -172,7 +219,7 @@ async def _pick(desc: str, prompt: str) -> bytes | None:
 
 async def fill_placeholders(
     body: str, out_dir: Path, url_prefix: str = "/img", *,
-    top_up: bool = True, topic: str = "", max_total: int = 3,
+    top_up: bool = True, topic: str = "", max_total: int = 3, llm=None,
 ) -> tuple[str, int]:
     """把正文里的 `![说明](prompt: xxx)` 替换成真图；图不够时主动补。
 
@@ -192,7 +239,7 @@ async def fill_placeholders(
     # group(1) 是图的说明（短，像新闻标题）→ 拿去搜真实图；
     # group(2) 是生图 prompt（长，描述画面）→ 拿去 AI 生成。
     results = await asyncio.gather(
-        *(_pick(m.group(1).strip(), m.group(2).strip()) for m in hits)
+        *(_pick(m.group(1).strip(), m.group(2).strip(), llm=llm, topic=topic) for m in hits)
     ) if hits else []
 
     it = iter(results)
