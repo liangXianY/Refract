@@ -367,6 +367,9 @@ async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
 class ChatIn(BaseModel):
     input: str = Field(min_length=1, max_length=4000)
     session_id: str = Field(default="", max_length=64)
+    # 浏览器本地存的持久 ID（localStorage）。长期记忆挂在这上面，不挂 session_id——
+    # session_id 是 IP 派生的，换 Wi-Fi / 切流量就变，长期记忆会跟着断
+    user_key: str = Field(default="", max_length=64)
 
 
 @app.post("/api/chat")
@@ -392,11 +395,12 @@ async def chat(payload: ChatIn, request: Request) -> dict[str, str]:
     task = TaskState(task_id)
     TASKS[task_id] = task
     quota.consume(ip, "chat", task_id)  # artifact=task_id，流水表可反查这一轮对话
-    asyncio.create_task(_run_chat(task, task_id, payload.input, sid, ip))
+    asyncio.create_task(_run_chat(task, task_id, payload.input, sid, ip, payload.user_key))
     return {"task_id": task_id, "session_id": sid}
 
 
-async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = "", ip: str = "") -> None:
+async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = "",
+                    ip: str = "", user_key: str = "") -> None:
     from .agents.memory_keeper import MemoryKeeper
     from .agents.session_context import session_memory
     from .agents.supervisor import handle_chat
@@ -422,7 +426,9 @@ async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = 
         # 没配 embedding key 时 enabled()=False，这里直接跳过，零开销。
         from .agents import long_memory
 
-        facts = long_memory.recall(session_id, text) if session_id else []
+        # 长期记忆按浏览器 ID 存（换网络不失忆），没带就退回 IP 派生的 session_id
+        mem_key = user_key or session_id
+        facts = long_memory.recall(mem_key, text) if mem_key else []
         if facts:
             context = (
                 "【长期记忆（这位用户以前说过的，和当前问题相关的）】\n"
@@ -464,7 +470,7 @@ async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = 
             # 串在响应链路上会给用户多等好几秒，而且失败也不该影响这一轮
             if long_memory.enabled():
                 asyncio.create_task(
-                    asyncio.to_thread(long_memory.note_turn, session_id, text, summ)
+                    asyncio.to_thread(long_memory.note_turn, mem_key, text)
                 )
 
             # 滚动窗口：超过最近 5 轮（10 条消息）的旧消息，交给模型压缩成摘要，

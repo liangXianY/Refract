@@ -40,6 +40,7 @@ from typing import Any
 _LOCK = threading.Lock()
 _CLIENT: Any = None
 _TRIED = False
+_LAST_ERR = ""  # 初始化失败的原因，给 /api/health 报出去，免得黑盒排查
 
 
 def _env(k: str, d: str = "") -> str:
@@ -53,7 +54,7 @@ def enabled() -> bool:
 
 def _client():
     """懒加载单例。mem0 首次初始化要连向量库，放在请求里做会拖慢首轮。"""
-    global _CLIENT, _TRIED
+    global _CLIENT, _TRIED, _LAST_ERR
     if _CLIENT is not None or _TRIED:
         return _CLIENT
     with _LOCK:
@@ -73,7 +74,10 @@ def _client():
                 "llm": {
                     "provider": "deepseek",
                     "config": {
-                        "model": _env("DEEPSEEK_CHAT_MODEL", "deepseek-chat"),
+                        # 抽事实是小事，用最便宜的：优先项目已在用的 DEEPSEEK_MODEL
+                        # （服务器上是 deepseek-flash），没有才退回 deepseek-chat
+                        "model": (_env("MEM0_LLM_MODEL") or _env("DEEPSEEK_MODEL")
+                                  or _env("DEEPSEEK_CHAT_MODEL") or "deepseek-chat"),
                         "api_key": _env("DEEPSEEK_API_KEY"),
                         "deepseek_base_url": _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
                         "max_tokens": 2000,
@@ -88,14 +92,23 @@ def _client():
                     },
                 },
                 # 本地 qdrant（嵌入式，落盘，不用起服务）
+                # embedding_model_dims 必须显式给：mem0 认不出我们用的是 OpenAI 兼容
+                # 协议指向的第三方模型，默认按 ada-002 建 1536 维的库，而 bge-m3 是
+                # 1024 维，写入时直接 shapes (0,1536) vs (1024,) 报错
                 "vector_store": {
                     "provider": "qdrant",
-                    "config": {"path": os.path.join(data_dir, "mem0"), "on_disk": True},
+                    "config": {
+                        "path": os.path.join(data_dir, "mem0"),
+                        "on_disk": True,
+                        "embedding_model_dims": int(_env("MEM0_EMBED_DIMS", "1024")),
+                    },
                 },
             }
             _CLIENT = Memory.from_config(cfg)
+            _LAST_ERR = ""
             return _CLIENT
-        except Exception:
+        except Exception as exc:
+            _LAST_ERR = f"{type(exc).__name__}: {exc}"[:300]
             _CLIENT = None
             return None
 
@@ -106,24 +119,30 @@ def recall(user_key: str, query: str, k: int = 4) -> list[str]:
     if not m or not user_key or not query:
         return []
     try:
-        res = m.search(query=query[:300], user_id=user_key, limit=k)
+        # mem0 2.2 改了签名：user_id 不能再放顶层，必须走 filters。
+        # 老版本反过来（不认 filters），两种都试一遍才不至于换版本就哑掉
+        try:
+            res = m.search(query=query[:300], filters={"user_id": user_key}, limit=k)
+        except (TypeError, ValueError):
+            res = m.search(query=query[:300], user_id=user_key, limit=k)
         items = res.get("results", res) if isinstance(res, dict) else res
         return [str(i.get("memory", "")).strip() for i in items if str(i.get("memory", "")).strip()][:k]
     except Exception:
         return []
 
 
-def note_turn(user_key: str, user_text: str, reply: str) -> None:
-    """把一轮对话交给 mem0 抽事实。同步调用，调用方自己决定放后台还是等待。"""
+def note_turn(user_key: str, user_text: str) -> None:
+    """把用户这一轮说的话交给 mem0 抽事实。同步调用，调用方自己决定放后台还是等待。
+
+    只喂用户的话，**不喂助手的答复**：实测把助手回答一起喂，mem0 会把助手自己
+    编的建议抽成「用户的偏好」存下来（"用户的小红书文案风格规则（由用户此前定下、
+    在对话中细化）…"），越存越歪。用户的偏好一定出现在用户的话里。
+    """
     m = _client()
-    if not m or not user_key or not (user_text or reply):
+    if not m or not user_key or not (user_text or "").strip():
         return
     try:
-        m.add(
-            [{"role": "user", "content": user_text[:800]},
-             {"role": "assistant", "content": (reply or "")[:800]}],
-            user_id=user_key,
-        )
+        m.add([{"role": "user", "content": user_text[:800]}], user_id=user_key)
     except Exception:
         pass
 
@@ -131,7 +150,8 @@ def note_turn(user_key: str, user_text: str, reply: str) -> None:
 def status() -> dict:
     """给 /api/health 或排查用：开没开、为什么没开。"""
     if enabled():
-        return {"enabled": True, "ready": _client() is not None}
+        return {"enabled": True, "ready": _client() is not None,
+                "error": _LAST_ERR or None}
     return {
         "enabled": False,
         "reason": "未配置 MEM0_ENABLED=1 + MEM0_EMBED_KEY（mem0 需要 embedding 模型）",

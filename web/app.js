@@ -66,6 +66,16 @@ function renderMd(text, withCursor) {
   return out.join('\n');
 }
 
+/** 浏览器本地的持久身份。长期记忆挂在这上面：换网络 IP 变了也不会失忆。 */
+function userKey() {
+  let k = localStorage.getItem('refract_uid');
+  if (!k) {
+    k = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem('refract_uid', k);
+  }
+  return k;
+}
+
 /** 起任务 + 读 SSE。onEvent 收到每一个事件。 */
 async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 90000) {
   const resp = await fetch(path, {
@@ -581,7 +591,7 @@ async function sendChat(text) {
   try {
     $('chatHint').textContent = '主 Agent 规划中…';
     await runTask(
-      { input: text, session_id: localStorage.getItem('refract_sid') || '' },
+      { input: text, session_id: localStorage.getItem('refract_sid') || '', user_key: userKey() },
       (ev) => { turn.handle(ev); if (ev.type === 'plan') $('chatHint').textContent = `执行 ${ev.steps.length} 步`; },
       '/api/chat'
     );

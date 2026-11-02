@@ -221,21 +221,41 @@ import 在白名单内、有文案、真的渲染了镜头文字、props 解构�
 | 对话记忆 | 最近 5 轮原文 + 更早的滚动摘要 | 同上 | 摘要已经够用，不进向量库 |
 | 长期记忆 | 跨会话的用户事实与偏好（"他做自媒体，小红书要口语化"） | `agents/long_memory.py` 适配 **mem0**（可选） | 这类才需要语义检索，用现成模块 |
 
-长期记忆默认关闭，原因写在代码里：mem0 必须要 embedding 模型，而 DeepSeek 没有
-embedding 接口。实测三条路——fastembed 本地模型在这网络下下载要 12 分钟（直连 HuggingFace
-直接超时）、sentence-transformers 要 torch（2G 内存机器判死）、硅基流动 API 要 key。
-配好 key 就能开：
+长期记忆**默认关闭**：mem0 必须要 embedding（向量化）模型，而 DeepSeek 没有 embedding
+接口。三条路实测——fastembed 本地 ONNX 模型在这网络下下载要 12 分钟（直连 HuggingFace
+直接超时）、sentence-transformers 要 torch（2G 内存机器判死）、硅基流动 API 免费但要 key。
+开了 key 就能用（服务器上已开）：
 
 ```bash
-pip install mem0ai
+uv pip install --python .venv/bin/python mem0ai   # 17 个包，不降级现有依赖
 # .env
 MEM0_ENABLED=1
-MEM0_EMBED_KEY=sk-xxx                # 硅基流动，bge-m3 有免费额度
+MEM0_EMBED_KEY=sk-xxx                # 硅基流动，bge-m3 免费
 MEM0_EMBED_BASE=https://api.siliconflow.cn/v1
 MEM0_EMBED_MODEL=BAAI/bge-m3
+MEM0_EMBED_DIMS=1024                 # bge-m3 是 1024 维，必须显式给
 ```
 
-`/api/health` 的 `memory` 字段会直接告诉你开没开、为什么没开。
+`/api/health` 的 `memory` 字段会直接告诉你开没开、初始化成功没有、失败原因。
+
+实测（2026-11-02，服务器真跑）：写入 1.4~2.2s（DeepSeek 抽事实），检索 0.2s，
+跨会话跨网络召回准确，用户之间隔离。存进去的是「用户叫小梁，做自媒体」这类事实，
+132KB。
+
+**接 mem0 踩的四个坑**（都在 `long_memory.py` 注释里）：
+1. `embedding_model_dims` 必须显式给。mem0 认不出我们用 OpenAI 兼容协议指向的
+   第三方模型，默认按 ada-002 建 1536 维的库，bge-m3 是 1024 维，写入就报
+   `shapes (0,1536) and (1024,) not aligned`
+2. mem0 2.2 改了检索签名：`user_id` 不能放顶层，得 `search(filters={"user_id": ...})`，
+   代码里两种都试一遍，换版本不至于哑掉
+3. 本地 qdrant 是**单进程文件锁**：服务占着 `data/mem0` 时，任何调试脚本都打不开
+   （报 already accessed by another instance）。要查库就 `cp -r data/mem0 /tmp/x` 再开副本
+4. 只喂**用户的话**给 mem0，别喂助手答复。实测一起喂会把助手自己编的建议抽成
+   「用户的偏好」存下来，越存越歪
+
+**长期记忆挂 `user_key` 不挂 `session_id`**：session_id 是 IP 派生的，换 Wi-Fi 就变，
+记忆会断。前端 localStorage 存一个 uuid（web/app.js 的 `userKey()`）随请求带上，
+后端 `user_key or session_id`。
 
 
 ---

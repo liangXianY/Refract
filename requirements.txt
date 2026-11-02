@@ -7,5 +7,6 @@ mcp>=2.3,<3
 
 # 可选：长期语义记忆（GitHub 上的 mem0）。装之前先看清楚：
 # 它需要 embedding 模型，DeepSeek 没有 embedding 接口，所以还得配
-# MEM0_EMBED_KEY（硅基流动 bge-m3 免费）。没配就别装，省 175MB 依赖。
+# MEM0_EMBED_KEY（硅基流动 bge-m3 免费）。没配就别装，省 17 个包。
+# 另外它自带本地 qdrant，是单进程文件锁——多 worker 部署会起不来。
 # mem0ai>=2.2
