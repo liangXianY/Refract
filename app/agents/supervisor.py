@@ -338,10 +338,41 @@ async def _run_hot_topics(args: dict, llm, keeper, task_id, emit, results) -> di
     }
 
 
+def _ngrams(s: str) -> set[str]:
+    """中文按 2 字滑窗切，英文数字按连续片段保留。
+
+    不引分词器（依赖重、还要维护词表），2-gram 足够做「跑没跑偏」的判断：
+    真正相关的结果，和标题共享的二字片段比例会明显更高。
+    """
+    s = re.sub(r"[^\u4e00-\u9fff0-9a-zA-Z]", "", s or "")
+    if len(s) < 2:
+        return {s} if s else set()
+    return {s[i:i + 2] for i in range(len(s) - 1)}
+
+
+def _relevance(title: str, item: dict) -> float:
+    """搜索结果对热榜标题的覆盖度（0~1）。
+
+    实测踩过的坑：搜「将有2名中国人登陆月球」返回一堆 Reddit 上
+    Wells Fargo 银行账户的帖子——Tavily 对预测性中文长句索引很差。
+    这种跑偏结果的 2-gram 交集基本为 0，能直接识别出来。
+    """
+    q = _ngrams(title)
+    if not q:
+        return 0.0
+    blob = f"{item.get('title', '')} {item.get('content', '')}"
+    return len(q & _ngrams(blob)) / len(q)
+
+
+# 低于这个覆盖度就当没搜到。0.12 是试出来的：
+# 真正相关的结果通常 >0.2，完全跑偏的在 0.05 以下，中间地带极少
+_RELEVANCE_FLOOR = 0.12
+
+
 async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> dict:
     """针对某条热点标题搜正文：热榜只有标题+热度，要「理解」这条热点讲什么，
     必须联网读详情。这是「了解热点」和「拿热点写稿」都能用的公共步骤。"""
-    from ..pipeline.search import SearchError, search, to_material
+    from ..pipeline.search import SearchError, SearchResult, search, to_material
 
     title = str(args.get("title") or "").strip()
     source = str(args.get("source") or "").strip()
@@ -368,12 +399,38 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
         res = await search(query, max_results=6)
     except SearchError as exc:
         await emit({"type": "tool_detail", "lines": [f"搜索热点详情失败：{exc}"]})
-        return {"tool": "lookup_hot", "summary": f"「{title[:20]}」详情搜索失败", "material": ""}
-    await emit({"type": "tool_detail", "lines": [f"搜「{query[:30]}」找到 {len(res.items)} 篇相关"]})
+        return {"tool": "lookup_hot", "summary": f"「{title[:20]}」详情搜索失败",
+                "material": "", "found": False}
+
+    # 相关性过滤：搜索跑偏时宁可明说「没找到」，也别把无关内容当素材喂给模型。
+    # 线上踩过：查「将有2名中国人登陆月球」返回一堆 Wells Fargo 银行帖子，
+    # 模型只能对着一堆无关材料硬编，或者如实说「搜不到但返回了这些」。
+    scored = sorted(((_relevance(title, it), it) for it in res.items),
+                    key=lambda x: -x[0])
+    relevant = [it for s, it in scored if s >= _RELEVANCE_FLOOR]
+    if not relevant:
+        best = scored[0][0] if scored else 0.0
+        await emit({"type": "tool_detail", "lines": [
+            f"搜到 {len(res.items)} 篇，最高相关度仅 {best:.0%}，"
+            f"和「{title[:16]}」对不上，判定为未找到可靠信息"
+        ]})
+        return {
+            "tool": "lookup_hot",
+            "summary": f"「{title[:20]}」没搜到可靠详情",
+            "material": "",
+            "found": False,
+        }
+
+    kept = SearchResult(query=res.query, items=relevant, images=res.images)
+    await emit({"type": "tool_detail", "lines": [
+        f"搜「{query[:30]}」命中 {len(relevant)}/{len(res.items)} 篇"
+        f"（最高相关度 {scored[0][0]:.0%}）"
+    ]})
     return {
         "tool": "lookup_hot",
         "summary": f"「{title[:20]}」详情",
-        "material": to_material(res),
+        "material": to_material(kept),
+        "found": True,
     }
 
 
@@ -658,7 +715,12 @@ async def handle_chat(
 
     # 是否生成文字答复：默认「有内容就总结」（泛化，不依赖模型输出字段），
     # planner 明确说 summarize=false 时才跳过（写稿/出视频这种工具自己输出的场景）。
-    material_results = [r for r in results if r.get("material") or r.get("items")]
+    material_results = [
+        r for r in results
+        # lookup_hot 即使没搜到也要留下：得让模型知道「查过了、确实没有」，
+        # 否则它会当没发生过，转而凭标题瞎编
+        if r.get("material") or r.get("items") or r.get("tool") == "lookup_hot"
+    ]
     if material_results and plan.summarize is not False:
         brief_lines = []
         for r in material_results:
@@ -668,7 +730,14 @@ async def handle_chat(
             elif tool == "github_trending" and r.get("items"):
                 brief_lines += [f"- {i['full_name']}（★{i['stars']} {i['language']}）：{(i.get('description') or '')[:60]}" for i in r["items"]]
             elif tool == "lookup_hot":
-                brief_lines.append(f"【热点详情】\n{r['material']}")
+                if r.get("material"):
+                    brief_lines.append(f"【热点详情】\n{r['material']}")
+                else:
+                    brief_lines.append(
+                        "【热点详情】没搜到可靠信息——搜索返回的内容和这条标题对不上，"
+                        "无法确认它具体讲什么。回答时如实说明查不到，"
+                        "不要凭标题猜测或编造细节。"
+                    )
             elif tool == "fetch_url":
                 brief_lines.append(f"- {r['summary']}\n  摘录：{r['material'][:600]}")
             elif tool == "memory_recall" and r.get("items"):

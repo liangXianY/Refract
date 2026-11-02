@@ -1022,3 +1022,57 @@ textarea::placeholder{color:var(--dim)}
   border-radius:8px;font-size:12px;line-height:1.55;color:#8a5a15;
 }
 .vfallback b{font-weight:600;color:#6d4610}
+
+/* ============================ 手机断点（≤640px）：只作用于工作台 ============================
+   落地页在 900px 档已按设计规范适配好（导航收成 brand + 开始创作、数据带 2×2、
+   步骤卡纵排、视差全关），这部分不动，免得把已经调好的版式改坏。
+   这里只处理工作台三个面板（会话/文章/视频）在竖屏下的可用性：
+   输入区与产物区上下堆叠后，高度怎么分、触摸目标够不够大、iOS 会不会自动放大整页。
+   ------------------------------------------------------------------------------ */
+@media (max-width:640px){
+  /* 导航：工作台态是 brand + modes 胶囊，缩到能并排放下 */
+  nav{padding:0 12px;gap:8px;height:52px}
+  .logo{width:25px;height:25px;font-size:12px}
+  .brand{gap:8px}
+  .brand h1{font-size:14px}
+  .modes{padding:2px}
+  .modes button{padding:6px 10px;font-size:11.5px}
+
+  /* 面板外壳：圆角与内边距按 --r-lg / --sp-5 的缩小版给 */
+  .mode-panel{padding:8px 12px 10px}
+  /* 手机上不再做「单屏应用壳」——竖屏高度不够，改成自然流式滚动，
+     侧栏（输入区）在上、产物区在下，各自完整展开 */
+  .split{gap:12px;grid-template-rows:auto auto;height:auto}
+  .side{padding:14px;border-radius:12px;overflow:visible}
+  .work{border-radius:12px;min-height:60vh}
+
+  /* 表单：字号必须 ≥16px——iOS Safari 聚焦时会自动放大整页，
+     用户得双指缩回去，这是手机上最破坏体验的一类问题 */
+  textarea,.inp{font-size:16px}
+  textarea{height:92px}
+  .inp{height:42px}
+  /* 主按钮 ≥44px，符合触摸目标下限 */
+  .primary{height:44px;font-size:15px}
+  .seg button{padding:9px 0;font-size:13px}
+
+  /* 热榜标签 / 视频流程卡：压缩纵向占用，一屏能看到更多 */
+  .hot-tabs{gap:4px}
+  .hot-tab{padding:5px 9px;font-size:11px}
+  .vflow{gap:6px;margin-bottom:12px}
+  .tcard{padding:9px 11px}
+
+  /* 会话 */
+  .chatlog{padding:14px 0 8px}
+  .msg{gap:9px;margin-bottom:18px}
+  .msg .av{width:23px;height:23px;font-size:11px}
+
+  /* 产物里的表格：小屏横向滚动，别把整页撑出横向滚动条 */
+  .md table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .md img{max-width:100%;height:auto}
+}
+
+/* 超窄屏（iPhone SE 一代那档）：品牌名让位给板块切换 */
+@media (max-width:380px){
+  .brand h1{display:none}
+  .modes button{padding:6px 7px;font-size:10.5px}
+}

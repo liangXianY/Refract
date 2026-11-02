@@ -76,6 +76,12 @@ async def fetch_hot(source: str, limit: int = 10) -> HotList:
             payload = resp.json()
     except httpx.TimeoutException as exc:
         raise HotListError(f"{SOURCES[source]} 接口超时") from exc
+    except httpx.HTTPStatusError as exc:
+        # 上游把端点下线了（60s 的 /v2/bilibili 已 404「接口被吃掉了」）。
+        # 注意 HTTPStatusError 和 RequestError 是兄弟类，不是父子——
+        # 只捕 RequestError 会让 4xx/5xx 冒泡成 500，前端只能看到白屏。
+        code = exc.response.status_code
+        raise HotListError(f"{SOURCES[source]} 接口不可用（上游 HTTP {code}）") from exc
     except (httpx.RequestError, ValueError) as exc:
         raise HotListError(f"{SOURCES[source]} 接口异常：{exc}") from exc
 
