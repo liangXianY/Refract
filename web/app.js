@@ -116,14 +116,60 @@ async function logout() {
   goLanding(true);
 }
 
-/* ---------------- 登录弹窗 ---------------- */
+/* ---------------- 登录弹窗 ----------------
+   四种模式：验证码登录（含忘密码找回）、密码登录、注册、给已登录账号设密码。
+   注册走「邮箱验证码 + 设密码」，日常登录走密码——不用每次等邮件。 */
+
+const AM = {
+  mode: 'code',
+  conf: {
+    code:  { title: '验证码登录', sub: '填邮箱收一个 6 位验证码，第一次登录自动建账号。',
+             tip: '忘了密码也走这条路：能收信就能进，进去再设一个新密码。',
+             go: '登录', code: 1, pw: 0, pw2: 0, tabs: 1 },
+    pw:    { title: '密码登录', sub: '用注册时设的密码登录。',
+             tip: '密码忘了？切回「验证码」，用邮箱收个码进来重设。',
+             go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1 },
+    reg:   { title: '注册', sub: '邮箱收验证码，再设一个密码，以后用密码直接登。',
+             tip: '注册后，对话记录和长期偏好都挂在这个账号下，换设备也在。',
+             go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1 },
+    setpw: { title: '设置密码', sub: '给这个账号设个密码，下次不用等邮件。',
+             tip: '密码只存哈希（scrypt + 随机盐），服务端看不到明文。',
+             go: '设置密码', code: 0, pw: 1, pw2: 1, tabs: 0 },
+  },
+};
+
+function setAmMode(mode) {
+  const c = AM.conf[mode];
+  if (!c) return;
+  AM.mode = mode;
+  $('amTitle').textContent = c.title;
+  $('amSub').textContent = c.sub;
+  $('amTip').textContent = c.tip;
+  $('amGo').textContent = c.go;
+  $('amCodeRow').hidden = !c.code;
+  $('amPwRow').hidden = !c.pw;
+  $('amPw2Row').hidden = !c.pw2;
+  $('amTabs').hidden = !c.tabs;
+  // 改密码要先过原密码这一关，不然别人拿到一台已登录的浏览器就能把号抢走。
+  // 没设过密码的账号（验证码注册的第一次）不需要
+  $('amOldRow').hidden = !(mode === 'setpw' && AUTH.user && AUTH.user.has_password);
+  document.querySelectorAll('#amTabs button').forEach(b => {
+    b.classList.toggle('on', b.dataset.amtab === mode);
+  });
+  amSay('');
+}
 
 let sendTimer = null;
 
-function openLogin() {
+function openLogin(mode = 'code') {
   $('authModal').hidden = false;
-  amSay('');
-  setTimeout(() => $('amEmail').focus({ preventScroll: true }), 60);
+  setAmMode(mode);
+  setTimeout(() => {
+    const f = mode === 'pw' ? $('amPw')
+      : (mode === 'setpw' && !$('amOldRow').hidden) ? $('amOld')
+      : $('amEmail');
+    f.focus({ preventScroll: true });
+  }, 60);
 }
 
 function closeLogin() {
@@ -171,44 +217,97 @@ async function sendCode() {
   }
 }
 
-async function doLogin() {
+// 登录成功后要做的事：铺工作台、接上最近一条会话
+function afterLogin(d) {
+  AUTH.user = d.user;
+  AUTH.conversations = d.conversations || [];
+  AUTH.cid = '';
+  localStorage.removeItem('refract_cid');
+  closeLogin();
+  renderNavAuth();
+  renderConvs();
+  clearChat();
+  goWorkbench('chat', true);
+  if (AUTH.conversations.length) openConversation(AUTH.conversations[0].id);
+  else $('chatInput').focus({ preventScroll: true });
+}
+
+function readPw(needConfirm) {
+  const pw = $('amPw').value;
+  if (pw.length < 8) throw new Error('密码至少 8 位');
+  if (needConfirm && pw !== $('amPw2').value) throw new Error('两次输入的密码不一样');
+  return pw;
+}
+
+async function postAuth(url, body) {
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || '失败');
+  return d;
+}
+
+async function submitAuth() {
+  const mode = AM.mode;
   const email = $('amEmail').value.trim();
-  const code = $('amCode').value.trim();
-  if (!email || !code) { amSay('邮箱和验证码都要填'); return; }
   const btn = $('amGo');
   btn.disabled = true;
-  btn.textContent = '登录中…';
+  const label = btn.textContent;
+  btn.textContent = '处理中…';
   try {
-    const r = await fetch('/api/auth/verify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, code }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.detail || '登录失败');
-    AUTH.user = d.user;
-    AUTH.conversations = d.conversations || [];
-    AUTH.cid = '';
-    localStorage.removeItem('refract_cid');
-    closeLogin();
-    renderNavAuth();
-    renderConvs();
-    clearChat();
-    goWorkbench('chat', true);
-    if (AUTH.conversations.length) await openConversation(AUTH.conversations[0].id);
-    else $('chatInput').focus({ preventScroll: true });
+    if (mode === 'setpw') {
+      const body = { password: readPw(true) };
+      if (!$('amOldRow').hidden) body.old_password = $('amOld').value;
+      await postAuth('/api/auth/set-password', body);
+      amSay('密码设好了，下次直接用密码登录', true);
+      setTimeout(closeLogin, 900);
+      return;
+    }
+    if (!email) { amSay('先填邮箱'); return; }
+
+    let d;
+    if (mode === 'reg') {
+      d = await postAuth('/api/auth/register', {
+        email, code: $('amCode').value.trim(), password: readPw(true),
+      });
+      afterLogin(d);
+    } else if (mode === 'pw') {
+      d = await postAuth('/api/auth/login', { email, password: $('amPw').value });
+      afterLogin(d);
+    } else {
+      d = await postAuth('/api/auth/verify', { email, code: $('amCode').value.trim() });
+      afterLogin(d);
+      // 验证码进来的是新账号（还没设过密码）：顺手引导设一个，省得下次还要等邮件
+      if (d.is_new) {
+        setTimeout(() => openLogin('setpw'), 1200);
+      }
+    }
   } catch (e) {
     amSay(e.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = '登录';
+    btn.textContent = label;
   }
 }
 
 $('convNew').onclick = newConversation;
 $('amSend').onclick = sendCode;
-$('amGo').onclick = doLogin;
-$('amCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-$('amEmail').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCode(); });
+$('amGo').onclick = submitAuth;
+document.querySelectorAll('#amTabs button').forEach(b => {
+  b.onclick = () => setAmMode(b.dataset.amtab);
+});
+// 换行即提交：验证码框输完直接回车，密码框也是
+['amCode', 'amPw', 'amPw2', 'amOld'].forEach(id => {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') submitAuth(); });
+});
+$('amEmail').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  if (AM.mode === 'pw') $('amPw').focus();
+  else if (AM.conf[AM.mode].code) sendCode();
+  else submitAuth();
+});
 document.querySelectorAll('[data-auth-close]').forEach(el => { el.onclick = closeLogin; });
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('authModal').hidden) closeLogin();

@@ -11,7 +11,7 @@
   header .logo{width:28px;height:28px;border-radius:7px;background:#12a37f;display:grid;place-items:center;font-weight:700}
   header h1{font-size:16px;margin:0;font-weight:600}
   header .sub{font-size:11px;color:#9aa;letter-spacing:.08em}
-  main{max-width:1000px;margin:0 auto;padding:24px}
+  main{max-width:1100px;margin:0 auto;padding:24px}
   .card{background:#fff;border:1px solid #e6e6e2;border-radius:12px;padding:20px;margin-bottom:20px}
   .card h2{font-size:14px;margin:0 0 16px;letter-spacing:-.01em}
   .login-box{max-width:360px;margin:60px auto}
@@ -19,23 +19,32 @@
   .login-box button{width:100%;padding:10px;border:0;border-radius:8px;background:#111211;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
   .login-box button:hover{background:#12a37f}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th{text-align:left;background:#f2f4f2;padding:9px 12px;font-weight:700;border-bottom:2px solid #12a37f}
+  th{text-align:left;background:#f2f4f2;padding:9px 12px;font-weight:700;border-bottom:2px solid #12a37f;white-space:nowrap}
   td{padding:9px 12px;border-bottom:1px solid #eeeee9;vertical-align:top}
   tr:hover td{background:#fafbfa}
   .mono{font-family:ui-monospace,Consolas,monospace;font-size:12px}
   .tag{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;background:#f2f4f2;color:#555}
   .tag.unlimit{background:#e6f5ef;color:#0d7a5f}
   .tag.limit{background:#fdf3e7;color:#c98a1e}
+  .tag.anon{background:#f0f0ee;color:#888}
+  .tag.pw{background:#eef3fb;color:#3b6ea5}
   .btn{padding:5px 12px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:12px;margin-right:6px}
   .btn:hover{border-color:#12a37f;color:#12a37f}
+  .btn.go{border-color:#12a37f;color:#0d7a5f;font-weight:600}
   .err{color:#c0392b}
   .muted{color:#999;font-size:12px}
   .empty{padding:30px;text-align:center;color:#999}
-  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .toolbar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
   .toolbar .spacer{margin-left:auto}
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100}
-  .modal-card{background:#fff;border-radius:14px;width:min(720px,92vw);max-height:82vh;display:flex;flex-direction:column;overflow:hidden}
-  .modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e6e6e2}
+  /* 额度：用量/上限，上限可直接改 */
+  .q{display:flex;align-items:center;gap:4px;white-space:nowrap}
+  .q .u{font-weight:700;min-width:14px;text-align:right}
+  .q input{width:52px;padding:3px 5px;border:1px solid #ddd;border-radius:5px;font-size:12px;
+    font-family:ui-monospace,Consolas,monospace;text-align:center}
+  .q input:focus{outline:0;border-color:#12a37f}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:100;padding:20px}
+  .modal-card{background:#fff;border-radius:14px;width:min(760px,92vw);max-height:84vh;display:flex;flex-direction:column;overflow:hidden}
+  .modal-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #e6e6e2;gap:12px}
   .modal-h h2{font-size:15px;margin:0}
   .modal-body{padding:20px;overflow-y:auto}
   .qa{border:1px solid #e6e6e2;border-radius:10px;margin-bottom:14px;overflow:hidden}
@@ -45,13 +54,19 @@
   .qa-q b{background:#555}
   .qa-a b{background:#12a37f}
   .qa p{margin:0;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+  .convrow{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #e6e6e2;
+    border-radius:9px;margin-bottom:8px;cursor:pointer}
+  .convrow:hover{border-color:#12a37f;background:#fafdfc}
+  .convrow .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+  .convrow .m{font-size:11px;color:#999;flex:none}
+  .backbtn{border:0;background:none;color:#12a37f;font-size:12px;cursor:pointer;padding:0}
 </style>
 </head>
 <body>
 <header>
   <div class="logo">R</div>
   <h1>Refract</h1><span class="sub">ADMIN · 管理后台</span>
-  <div style="margin-left:auto" class="sub">按 IP 追踪用量与产物</div>
+  <div style="margin-left:auto" class="sub">按账号追踪用量与会话</div>
 </header>
 
 <main>
@@ -67,8 +82,8 @@
   <div id="panel" style="display:none">
     <div class="card">
       <div class="toolbar">
-        <h2 style="margin:0">用户与配额</h2>
-        <span class="muted">默认：对话 10 · 视频 1 · 文章 3（永久配额，用完成止）</span>
+        <h2 style="margin:0">账号与配额</h2>
+        <span class="muted">上限可直接改，改完点「存额度」</span>
         <span class="spacer"></span>
         <button class="btn" id="refreshBtn">刷新</button>
       </div>
@@ -82,11 +97,11 @@
   </div>
 </main>
 
-<!-- 对话查看弹窗 -->
+<!-- 会话查看弹窗 -->
 <div class="modal" id="chatModal" style="display:none">
   <div class="modal-card">
     <div class="modal-h">
-      <h2 id="chatTitle">对话记录</h2>
+      <h2 id="chatTitle">会话</h2>
       <button class="btn" onclick="closeChat()">关闭</button>
     </div>
     <div class="modal-body" id="chatBox"></div>
@@ -96,6 +111,7 @@
 <script>
 const KEY = () => localStorage.getItem('refract_admin_key') || '';
 function authHeaders(){ return { 'x-admin-key': KEY() }; }
+function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 function showLogin(){ document.getElementById('loginBox').style.display='block'; document.getElementById('panel').style.display='none'; }
 function showPanel(){ document.getElementById('loginBox').style.display='none'; document.getElementById('panel').style.display='block'; }
@@ -117,33 +133,127 @@ document.getElementById('loginBtn').onclick = async () => {
 };
 document.getElementById('adminPwd').addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('loginBtn').click(); });
 
+let USERS = [];
+
 async function loadUsers() {
   const r = await fetch('/api/admin/users', { headers: authHeaders() });
   if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
   const { users } = await r.json();
+  USERS = users;
   const box = document.getElementById('usersBox');
-  if (!users.length) { box.innerHTML = '<div class="empty">还没有任何访问记录</div>'; return; }
-  box.innerHTML = `<table><tr><th>IP</th><th>状态</th><th>对话</th><th>视频</th><th>文章</th><th>首次/最近访问</th><th>操作</th></tr>` +
-    users.map(u => `
-      <tr data-sid="${u.session_id}">
-        <td class="mono">${u.ip}</td>
-        <td>${u.unlimited ? '<span class="tag unlimit">不限</span>' : '<span class="tag limit">受限</span>'}</td>
-        <td>${u.used.chat}/${u.limits.chat}</td>
-        <td>${u.used.video}/${u.limits.video}</td>
-        <td>${u.used.article}/${u.limits.article}</td>
-        <td class="muted">${u.first_seen}<br>${u.last_seen}</td>
-        <td>
-          <button class="btn" onclick="resetUser('${u.session_id}')">重置</button>
+  if (!users.length) { box.innerHTML = '<div class="empty">还没有任何账号</div>'; return; }
+  box.innerHTML = `<table>
+    <tr><th>账号</th><th>会话</th><th>对话</th><th>视频</th><th>文章</th><th>状态</th><th>最近 IP</th><th>注册 / 最近</th><th>操作</th></tr>` +
+    users.map((u, i) => {
+      const name = u.email
+        ? `<div>${esc(u.email)}</div><div class="mono muted">${esc(u.user_id)}</div>`
+        : `<span class="mono muted">${esc(u.session_id)} <span class="tag anon">匿名</span></span>`;
+      const pw = u.has_password ? ' <span class="tag pw">有密码</span>' : '';
+      const state = u.unlimited ? '<span class="tag unlimit">不限</span>'
+        : (u.custom_limits ? '<span class="tag limit">自定义</span>' : '<span class="tag">默认</span>');
+      return `
+      <tr>
+        <td>${name}${pw}</td>
+        <td>${u.registered
+          ? `<button class="btn go" onclick="viewConvs('${esc(u.user_id)}','${esc(u.email)}')">${u.conversations} 条</button>`
+          : '<span class="muted">—</span>'}</td>
+        <td>${qcell(i, 'chat', u)}</td>
+        <td>${qcell(i, 'video', u)}</td>
+        <td>${qcell(i, 'article', u)}</td>
+        <td>${state}</td>
+        <td class="mono muted">${esc(u.last_ip || '—')}</td>
+        <td class="muted">${esc(u.created_at || '—')}<br>${esc(u.last_login || u.last_seen || '—')}</td>
+        <td style="white-space:nowrap">
+          <button class="btn" onclick="saveQuota(${i})">存额度</button>
+          <button class="btn" onclick="resetUser('${u.session_id}')">重置用量</button>
           <button class="btn" onclick="toggleUnlimit('${u.session_id}', ${!u.unlimited})">${u.unlimited ? '取消不限' : '设不限'}</button>
         </td>
-      </tr>`).join('') + '</table>';
+      </tr>`;
+    }).join('') + '</table>';
+}
+
+// 一格「用量 / 可改上限」
+function qcell(i, k, u) {
+  return `<span class="q"><span class="u">${u.used[k] || 0}</span>/<input id="q_${i}_${k}" value="${u.limits[k]}" size="3"></span>`;
+}
+
+async function saveQuota(i) {
+  const u = USERS[i];
+  if (!u) return;
+  const limits = {};
+  for (const k of ['chat', 'video', 'article']) {
+    const el = document.getElementById(`q_${i}_${k}`);
+    if (el) limits[k] = el.value;
+  }
+  const r = await fetch('/api/admin/quota', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: u.session_id, limits }),
+  });
+  if (!r.ok) { alert('保存失败：' + ((await r.json()).detail || r.statusText)); return; }
+  await loadUsers();
+}
+
+/* ---------------- 会话查看 ---------------- */
+
+let convOwner = { uid: '', email: '' };
+
+async function viewConvs(uid, email) {
+  convOwner = { uid, email };
+  openChat();
+  document.getElementById('chatTitle').textContent = `${email} 的会话`;
+  const box = document.getElementById('chatBox');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  const r = await fetch(`/api/admin/user/${uid}/conversations`, { headers: authHeaders() });
+  if (!r.ok) { box.innerHTML = `<div class="empty err">${esc((await r.json()).detail || '加载失败')}</div>`; return; }
+  const { conversations } = await r.json();
+  if (!conversations.length) { box.innerHTML = '<div class="empty">这个账号还没有会话</div>'; return; }
+  box.innerHTML = conversations.map(c => `
+    <div class="convrow" onclick="viewConv('${esc(c.id)}')">
+      <span class="t">${esc(c.title || '（无标题）')}</span>
+      <span class="m">${fmt(c.updated_at)}</span>
+    </div>`).join('');
+}
+
+async function viewConv(cid) {
+  const box = document.getElementById('chatBox');
+  box.innerHTML = '<div class="empty">加载中…</div>';
+  const r = await fetch(`/api/admin/conversation/${cid}`, { headers: authHeaders() });
+  if (!r.ok) { box.innerHTML = `<div class="empty err">${esc((await r.json()).detail || '加载失败')}</div>`; return; }
+  const d = await r.json();
+  document.getElementById('chatTitle').textContent = d.title || '会话';
+  const msgs = (d.messages || []).map(m => {
+    let text = m.text || '';
+    if (!text && m.events) {
+      // 助手回复有时只存在事件流里（工具卡/流程卡那一轮），拼出来
+      text = m.events.filter(e => e.type === 'delta' && e.kind === 'content')
+        .map(e => e.text || '').join('');
+    }
+    return { role: m.role, text: text || '（空）' };
+  }).filter(m => m.role === 'user' || m.role === 'assistant');
+  box.innerHTML = `
+    <p class="muted" style="margin:0 0 14px">
+      <button class="backbtn" onclick="viewConvs('${esc(convOwner.uid)}','${esc(convOwner.email)}')">← 返回会话列表</button>
+      &nbsp;·&nbsp; ${esc(d.email)} &nbsp;·&nbsp; ${esc(d.updated_at)}
+    </p>` +
+    (msgs.length
+      ? msgs.map(m => `<div class="qa">
+          <div class="qa-${m.role === 'user' ? 'q' : 'a'}">
+            <b>${m.role === 'user' ? '问' : '答'}</b><p>${esc(m.text)}</p>
+          </div></div>`).join('')
+      : '<div class="empty">这条会话没有内容</div>');
+}
+
+function fmt(ts) {
+  if (!ts) return '';
+  return new Date(ts * 1000).toLocaleString('zh-CN', { hour12: false });
 }
 
 async function viewTurn(taskId) {
+  openChat();
+  document.getElementById('chatTitle').textContent = '某一轮对话';
   const box = document.getElementById('chatBox');
   box.innerHTML = '<div class="empty">加载中…</div>';
-  document.getElementById('chatModal').style.display = 'flex';
-  document.getElementById('chatTitle').textContent = '对话记录';
   try {
     const r = await fetch(`/api/admin/turn/${taskId}`, { headers: authHeaders() });
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
@@ -154,16 +264,15 @@ async function viewTurn(taskId) {
         <div class="qa-a"><b>答</b><p>${esc(d.a || '（无回答）')}</p></div>
       </div>`;
   } catch (e) {
-    box.innerHTML = `<div class="empty" style="color:#c0392b">${esc(e.message)}</div>`;
+    box.innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
   }
 }
 
-function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-function closeChat() { document.getElementById('chatModal').style.display = 'none'; }
+function openChat(){ document.getElementById('chatModal').style.display='flex'; }
+function closeChat(){ document.getElementById('chatModal').style.display='none'; }
 
 async function resetUser(sid) {
-  if (!confirm('确定重置这个用户的配额？')) return;
+  if (!confirm('把这个账号的已用量清零？（上限不变）')) return;
   await fetch('/api/admin/reset', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sid }) });
   await loadUsers();
 }
@@ -178,7 +287,7 @@ async function loadLog() {
   const { log } = await r.json();
   const box = document.getElementById('logBox');
   if (!log.length) { box.innerHTML = '<div class="empty">暂无流水</div>'; return; }
-  box.innerHTML = `<table><tr><th>时间</th><th>IP</th><th>动作</th><th>产物</th></tr>` +
+  box.innerHTML = `<table><tr><th>时间</th><th>IP</th><th>身份</th><th>动作</th><th>产物</th></tr>` +
     log.map(l => {
       let artCell = '<span class="muted">—</span>';
       if (l.action === 'chat' && l.artifact) {
@@ -188,7 +297,8 @@ async function loadLog() {
       }
       return `<tr>
         <td class="mono">${l.ts}</td>
-        <td class="mono">${l.ip}</td>
+        <td class="mono">${esc(l.ip || '—')}</td>
+        <td class="mono muted">${esc(l.session_id)}</td>
         <td><span class="tag">${l.label}</span></td>
         <td>${artCell}</td>
       </tr>`;

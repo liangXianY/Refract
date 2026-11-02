@@ -3,10 +3,13 @@
 设计：
 - 键（key）是「身份」：登录后是账号 ID（`u_xxx`），没有账号的调用方仍可用 IP
   （后台/脚本）。账号 ID 直接当键用，IP 则哈希成匿名 ID——这样老数据不用迁移
-- 配额：每个账号最多 10 轮对话 + 1 个视频 + 3 篇文章，用完成止，
-  管理员可重置、或把某账号设为不限
+- 配额：每个账号默认 10 轮对话 + 1 个视频 + 3 篇文章，用完成止。管理员可以
+  单独给某个账号改上限（`limits`）、重置已用量、或设为不限
 - 每次请求记录到 usage.json：IP、时间、动作（chat/video/article）、产物链接，
   管理员后台可查
+
+注意 `ip` 字段的历史包袱：早期这个位置存的是身份键本身（账号 ID 或 IP 哈希），
+后台里显示的「IP」其实是那串 ID。真实 IP 单独记在 `last_ip`。
 
 为什么存 JSON 而不是 sqlite：数据量小（个人部署），JSON 可读可手改，
 和项目里 runs/、models.json 的存法一致，少一个依赖。
@@ -46,6 +49,8 @@ class UserUsage:
     unlimited: bool = False
     first_seen: str = ""
     last_seen: str = ""
+    limits: dict | None = None   # 单独给这个账号设的上限；None = 用全局 QUOTA
+    last_ip: str = ""            # 真实 IP（账号身份下也能看出从哪来）
 
 
 class QuotaStore:
@@ -63,6 +68,7 @@ class QuotaStore:
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
             for u in data.get("users", []):
+                # 老数据里没有 limits/last_ip 这两个键，用 dataclass 的默认值补齐
                 self._users[u["session_id"]] = UserUsage(**u)
             self._log = data.get("log", [])
         except (json.JSONDecodeError, TypeError):
@@ -90,23 +96,35 @@ class QuotaStore:
             self._save()
         return u
 
+    def limit_of(self, u: UserUsage, action: str) -> int:
+        """这个账号在这个动作上的上限：单独设过就用单独的，否则用全局默认。"""
+        lim = (u.limits or {}).get(action)
+        if lim is None:
+            lim = QUOTA.get(action, 10)
+        try:
+            return max(0, int(lim))
+        except (TypeError, ValueError):
+            return QUOTA.get(action, 10)
+
     def can(self, ip: str, action: str) -> tuple[bool, str]:
         """能不能执行这个动作。返回 (ok, 原因)。"""
         u = self.get(ip)
         if u.unlimited:
             return True, ""
-        limit = QUOTA.get(action, 10)
+        limit = self.limit_of(u, action)
         if u.used.get(action, 0) >= limit:
             return False, f"已达上限（{limit}），请联系管理员重置或开通不限"
         return True, ""
 
-    def consume(self, ip: str, action: str, artifact: str = "") -> None:
+    def consume(self, ip: str, action: str, artifact: str = "", real_ip: str = "") -> None:
         u = self.get(ip)
         if not u.unlimited:
             u.used[action] = u.used.get(action, 0) + 1
         u.last_seen = datetime.now().isoformat(timespec="seconds")
+        if real_ip:
+            u.last_ip = real_ip
         self._log.append({
-            "ip": ip,
+            "ip": real_ip or ip,
             "session_id": u.session_id,
             "action": action,
             "label": ACTION_LABEL.get(action, action),
@@ -134,17 +152,41 @@ class QuotaStore:
         self._save()
         return True
 
+    def set_limits(self, session_id: str, limits: dict | None) -> bool:
+        """单独给某个账号设上限。传空/None = 取消自定义，回到全局默认。
+
+        只认 chat/video/article 三个键，值取整夹到 [0, 100000]——后台是手填的，
+        别让一个手滑的负数把账号锁死。
+        """
+        u = self._users.get(session_id)
+        if u is None:
+            return False
+        clean: dict[str, int] = {}
+        for k in ("chat", "video", "article"):
+            v = (limits or {}).get(k)
+            if v is None or v == "":
+                continue
+            try:
+                clean[k] = max(0, min(int(v), 100000))
+            except (TypeError, ValueError):
+                continue
+        u.limits = clean or None
+        self._save()
+        return True
+
     def users(self) -> list[dict]:
         out = []
         for u in self._users.values():
             out.append({
                 "session_id": u.session_id,
                 "ip": u.ip,
+                "last_ip": u.last_ip,
                 "used": dict(u.used),
                 "unlimited": u.unlimited,
                 "first_seen": u.first_seen,
                 "last_seen": u.last_seen,
-                "limits": dict(QUOTA),
+                "limits": {k: self.limit_of(u, k) for k in QUOTA},
+                "custom_limits": bool(u.limits),
             })
         out.sort(key=lambda x: x["last_seen"] or "", reverse=True)
         return out

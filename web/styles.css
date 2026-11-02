@@ -1167,6 +1167,13 @@ body[data-view="landing"] #modes{display:none}
 .am-kicker{margin:0 0 8px;font-size:10px;letter-spacing:.18em;color:var(--dim)}
 .am-card h2{margin:0 0 6px;font-size:22px;letter-spacing:-.01em}
 .am-sub{margin:0 0 18px;font-size:var(--fs-small);color:var(--muted);line-height:1.6}
+.am-tabs{display:flex;gap:2px;background:var(--bg-2);padding:3px;border-radius:var(--r-full);
+  margin:0 0 16px}
+.am-tabs button{flex:1;position:relative;padding:7px 10px;border:0;border-radius:var(--r-full);
+  background:transparent;cursor:pointer;font-family:inherit;font-size:var(--fs-small);
+  color:var(--muted);transition:color var(--dur-1) var(--ease-out),background var(--dur-1)}
+.am-tabs button:hover:not(.on){color:var(--ink-2)}
+.am-tabs button.on{background:var(--surface);color:var(--ink);font-weight:600;box-shadow:var(--shadow-1)}
 .am-code{display:grid;grid-template-columns:1fr auto;gap:8px}
 .am-code .inp{letter-spacing:.24em;font-family:ui-monospace,Menlo,monospace}
 .am-code .ghost{height:40px;min-width:104px;white-space:nowrap;font-size:var(--fs-small)}

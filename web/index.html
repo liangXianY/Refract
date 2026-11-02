@@ -332,22 +332,48 @@
     <button class="am-x" data-auth-close aria-label="关闭">×</button>
     <p class="am-kicker">REFRACT · ACCOUNT</p>
     <h2 id="amTitle">登录 / 注册</h2>
-    <p class="am-sub">填邮箱收验证码就行，第一次登录自动建账号。</p>
+    <p class="am-sub" id="amSub">填邮箱收验证码就行，第一次登录自动建账号。</p>
+
+    <div class="am-tabs" id="amTabs">
+      <button data-amtab="code" class="on">验证码</button>
+      <button data-amtab="pw">密码</button>
+      <button data-amtab="reg">注册</button>
+    </div>
 
     <label class="lb" for="amEmail">邮箱</label>
     <input id="amEmail" class="inp" type="email" placeholder="you@qq.com"
            autocomplete="email" spellcheck="false">
 
-    <label class="lb mt" for="amCode">验证码</label>
-    <div class="am-code">
-      <input id="amCode" class="inp" inputmode="numeric" maxlength="6"
-             placeholder="6 位数字" autocomplete="one-time-code">
-      <button class="ghost" id="amSend">发送验证码</button>
+    <div id="amCodeRow">
+      <label class="lb mt" for="amCode">验证码</label>
+      <div class="am-code">
+        <input id="amCode" class="inp" inputmode="numeric" maxlength="6"
+               placeholder="6 位数字" autocomplete="one-time-code">
+        <button class="ghost" id="amSend">发送验证码</button>
+      </div>
+    </div>
+
+    <div id="amOldRow" hidden>
+      <label class="lb mt" for="amOld">原密码</label>
+      <input id="amOld" class="inp" type="password" placeholder="先验证一下是你本人"
+             autocomplete="current-password">
+    </div>
+
+    <div id="amPwRow" hidden>
+      <label class="lb mt" for="amPw">密码</label>
+      <input id="amPw" class="inp" type="password" placeholder="至少 8 位"
+             autocomplete="current-password">
+    </div>
+
+    <div id="amPw2Row" hidden>
+      <label class="lb mt" for="amPw2">再输一次密码</label>
+      <input id="amPw2" class="inp" type="password" placeholder="确认密码"
+             autocomplete="new-password">
     </div>
 
     <p class="am-msg" id="amMsg"></p>
     <button class="primary am-go" id="amGo">登录</button>
-    <p class="am-tip">登录后对话存在账号下：换设备、换网络都能接着聊，长期偏好也跟着你。</p>
+    <p class="am-tip" id="amTip">登录后对话存在账号下：换设备、换网络都能接着聊，长期偏好也跟着你。</p>
   </div>
 </div>
 

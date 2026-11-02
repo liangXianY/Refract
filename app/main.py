@@ -233,8 +233,40 @@ class VerifyIn(BaseModel):
     code: str = Field(min_length=4, max_length=8)
 
 
+class RegisterIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    code: str = Field(min_length=4, max_length=8)
+    password: str = Field(min_length=8, max_length=64)
+
+
+class LoginIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=64)
+
+
+class PasswordIn(BaseModel):
+    password: str = Field(min_length=8, max_length=64)
+    old_password: str = Field(default="", max_length=64)
+
+
 def _user_public(u: dict) -> dict:
     return {"id": u["id"], "email": u["email"]}
+
+
+def _login_response(token: str, user: dict, is_new: bool = False) -> JSONResponse:
+    """登录成功后的统一响应：种两个 cookie，顺带把会话列表带回去。"""
+    resp = JSONResponse({
+        "ok": True,
+        "user": _user_public(user),
+        "is_new": is_new or user.get("created", False),
+        "conversations": auth_store.list_conversations(user["id"]),
+    })
+    _set_login_cookie(resp, token)
+    # 再种一个「登录过」的标记（非 HttpOnly）：首屏内联脚本靠它决定要不要
+    # 直接铺工作台，否则已登录用户每次刷新都先闪一下落地页
+    resp.set_cookie("refract_seen", "1", max_age=auth_mod.TOKEN_TTL,
+                    httponly=False, samesite="lax", path="/")
+    return resp
 
 
 @app.post("/api/auth/send-code")
@@ -256,18 +288,50 @@ async def auth_verify(payload: VerifyIn, request: Request) -> JSONResponse:
         token, user = await asyncio.to_thread(auth_store.verify, payload.email, payload.code)
     except auth_mod.AuthError as exc:
         raise HTTPException(400, str(exc)) from exc
-    resp = JSONResponse({
-        "ok": True,
-        "user": _user_public(user),
-        "is_new": user.get("created", False),
-        "conversations": auth_store.list_conversations(user["id"]),
-    })
-    _set_login_cookie(resp, token)
-    # 再种一个「登录过」的标记（非 HttpOnly）：首屏内联脚本靠它决定要不要
-    # 直接铺工作台，否则已登录用户每次刷新都先闪一下落地页
-    resp.set_cookie("refract_seen", "1", max_age=auth_mod.TOKEN_TTL,
-                    httponly=False, samesite="lax", path="/")
-    return resp
+    return _login_response(token, user)
+
+
+@app.post("/api/auth/register")
+async def auth_register(payload: RegisterIn) -> JSONResponse:
+    """邮箱 + 验证码 + 密码注册。验证码证明邮箱是你的，密码是以后日常登录用的。
+
+    注册完直接是登录态，不用再登一次。
+    """
+    try:
+        token, user = await asyncio.to_thread(
+            auth_store.register, payload.email, payload.code, payload.password
+        )
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _login_response(token, user)
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: LoginIn) -> JSONResponse:
+    """邮箱 + 密码登录。"""
+    try:
+        token, user = await asyncio.to_thread(auth_store.login, payload.email, payload.password)
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _login_response(token, user)
+
+
+@app.post("/api/auth/set-password")
+async def auth_set_password(payload: PasswordIn, request: Request) -> dict[str, Any]:
+    """给已登录的账号设/改密码。
+
+    已经设过密码的必须先验原密码——不然别人拿到一台已登录的浏览器就能把账号
+    改密码抢走。没设过密码的（验证码注册的）直接设。
+    """
+    user = require_user(request)
+    try:
+        await asyncio.to_thread(
+            auth_store.set_password, user["id"], payload.password, payload.old_password,
+            request.cookies.get(auth_mod.COOKIE_NAME) or "",
+        )
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")
@@ -286,7 +350,12 @@ async def auth_me(request: Request) -> dict[str, Any]:
     if not u:
         return {"logged_in": False}
     convs = auth_store.list_conversations(u["id"])
-    return {"logged_in": True, "user": _user_public(u), "conversations": convs}
+    # has_password 给前端用：改密码时要不要先问原密码
+    return {
+        "logged_in": True,
+        "user": {**_user_public(u), "has_password": bool(u.get("has_password"))},
+        "conversations": convs,
+    }
 
 
 class ConvIn(BaseModel):
@@ -496,7 +565,7 @@ async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(user["id"], "article", f"/r/{task_id}")
+    quota.consume(user["id"], "article", f"/r/{task_id}", real_ip=client_ip(request))
     asyncio.create_task(
         _run(task, payload.input, payload.url, payload.platform, payload.words, payload.style)
     )
@@ -541,7 +610,7 @@ async def chat(payload: ChatIn, request: Request) -> dict[str, str]:
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(user["id"], "chat", task_id)  # artifact=task_id，流水表可反查这一轮对话
+    quota.consume(user["id"], "chat", task_id, real_ip=ip)  # artifact=task_id，流水表可反查这一轮
     asyncio.create_task(_run_chat(task, task_id, payload.input, cid, ip, user["id"]))
     return {"task_id": task_id, "conversation_id": cid, "session_id": cid}
 
@@ -1022,7 +1091,7 @@ async def video_render(payload: RenderIn, request: Request) -> dict[str, str]:
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(user["id"], "video", f"/v/{task_id}")
+    quota.consume(user["id"], "video", f"/v/{task_id}", real_ip=client_ip(request))
     asyncio.create_task(_run_video(task, task_id, payload, plan_obj))
     return {"task_id": task_id}
 
@@ -1339,13 +1408,95 @@ async def admin_page() -> FileResponse:
 
 @app.get("/api/admin/users")
 async def admin_users(request: Request) -> dict[str, Any]:
+    """后台用户表：以账号为单位。
+
+    先列所有注册账号（哪怕一次没聊过），再把用量套上去；最后补上没注册、
+    但用过几次的匿名记录（IP 哈希键），这样早期数据不会凭空消失。
+    """
     require_admin(request)
-    users = quota.users()
-    # 有账号的补上邮箱：后台看「谁在用」比看一串 u_xxx 有用
-    for u in users:
-        acct = auth_store.user_by_id(u["session_id"])
-        u["email"] = acct["email"] if acct else ""
-    return {"users": users}
+    from .quota import QUOTA
+
+    usage = {u["session_id"]: u for u in quota.users()}
+    out: list[dict] = []
+
+    for a in auth_store.all_users():
+        q = usage.pop(a["id"], None)
+        out.append({
+            "session_id": a["id"],
+            "user_id": a["id"],
+            "email": a["email"],
+            "registered": True,
+            "has_password": bool(a["has_password"]),
+            "conversations": a["n"],
+            "created_at": _fmt_ts(a["created_at"]),
+            "last_login": _fmt_ts(a["last_login"]),
+            "used": (q or {}).get("used") or {"chat": 0, "video": 0, "article": 0},
+            "unlimited": bool((q or {}).get("unlimited")),
+            "limits": (q or {}).get("limits") or dict(QUOTA),
+            "custom_limits": bool((q or {}).get("custom_limits")),
+            "last_ip": (q or {}).get("last_ip") or "",
+            "last_seen": (q or {}).get("last_seen") or "",
+        })
+
+    # 剩下的都是没注册就用了的（IP 派生的匿名键）
+    for sid, q in usage.items():
+        out.append({
+            "session_id": sid,
+            "user_id": "",
+            "email": "",
+            "registered": False,
+            "has_password": False,
+            "conversations": 0,
+            "created_at": "",
+            "last_login": "",
+            "used": q["used"],
+            "unlimited": q["unlimited"],
+            "limits": q["limits"],
+            "custom_limits": q["custom_limits"],
+            "last_ip": q.get("last_ip") or "",
+            "last_seen": q.get("last_seen") or "",
+        })
+
+    out.sort(key=lambda x: (x["last_seen"] or x["last_login"] or ""), reverse=True)
+    return {"users": out}
+
+
+def _fmt_ts(ts: float | None) -> str:
+    """时间戳 → '2026-11-02 19:40'。后台表格里不用 ISO 那一长串。"""
+    if not ts:
+        return ""
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+@app.get("/api/admin/user/{uid}/conversations")
+async def admin_user_conversations(request: Request, uid: str) -> dict[str, Any]:
+    """某个账号的会话列表（后台「查看会话」用）。"""
+    require_admin(request)
+    acct = auth_store.user_by_id(uid)
+    return {
+        "email": acct["email"] if acct else "",
+        "conversations": auth_store.list_conversations(uid, limit=200),
+    }
+
+
+@app.get("/api/admin/conversation/{cid}")
+async def admin_conversation(request: Request, cid: str) -> dict[str, Any]:
+    """后台查看一条会话的完整内容（跨用户，管理员专用）。"""
+    require_admin(request)
+    from .session_history import get_history
+
+    conv = auth_store.get_conversation(cid)
+    if not conv:
+        raise HTTPException(404, "找不到这条会话")
+    acct = auth_store.user_by_id(conv["user_id"])
+    return {
+        "id": cid,
+        "title": conv["title"],
+        "email": acct["email"] if acct else "",
+        "created_at": _fmt_ts(conv["created_at"]),
+        "updated_at": _fmt_ts(conv["updated_at"]),
+        "messages": get_history().history(cid),
+    }
 
 
 @app.get("/api/admin/session/{session_id}")
@@ -1390,7 +1541,7 @@ async def admin_reset(request: Request, body: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/admin/unlimited")
 async def admin_unlimited(request: Request, body: dict[str, Any]) -> dict[str, Any]:
-    """给某个 IP 设置/取消不限。body: {"session_id": "...", "unlimited": true|false}"""
+    """给某个账号设置/取消不限。body: {"session_id": "...", "unlimited": true|false}"""
     require_admin(request)
     sid = str(body.get("session_id") or "")
     if not sid:
@@ -1399,6 +1550,27 @@ async def admin_unlimited(request: Request, body: dict[str, Any]) -> dict[str, A
     if not quota.set_unlimited(sid, flag):
         raise HTTPException(404, "找不到这个用户")
     return {"ok": True, "unlimited": flag}
+
+
+@app.post("/api/admin/quota")
+async def admin_set_quota(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    """单独改某个账号的配额上限。
+
+    body: {"session_id": "u_xxx", "limits": {"chat": 30, "video": 5, "article": 10}}
+    limits 传空对象 = 取消自定义，回到全局默认。
+    """
+    require_admin(request)
+    sid = str(body.get("session_id") or "")
+    if not sid:
+        raise HTTPException(400, "缺 session_id")
+    limits = body.get("limits")
+    if limits is not None and not isinstance(limits, dict):
+        raise HTTPException(400, "limits 得是个对象")
+    # 账号可能存在但还没产生用量（注册了没聊过），这时额度表里没有它——先建一条
+    quota.get(sid)
+    if not quota.set_limits(sid, limits):
+        raise HTTPException(404, "找不到这个用户")
+    return {"ok": True, "limits": limits or None}
 
 
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
