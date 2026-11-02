@@ -1124,6 +1124,7 @@ body[data-view="landing"] #modes{display:none}
 .navout{border:0;background:none;color:var(--dim);font-size:var(--fs-micro);
   cursor:pointer;padding:2px 2px}
 .navout:hover{color:var(--err)}
+.navpw:hover{color:var(--accent-ink)}
 
 /* ---- 会话两栏 ---- */
 .chatlayout{height:100%;display:grid;grid-template-columns:248px minmax(0,1fr)}

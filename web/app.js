@@ -29,8 +29,10 @@ function renderNavAuth() {
       <div class="navuser" title="${esc(AUTH.user.email)}">
         <span class="av">${esc(initial)}</span>
         <span class="em">${esc(AUTH.user.email)}</span>
+        <button class="navout navpw" id="navPw">${AUTH.user.has_password ? '改密码' : '设密码'}</button>
         <button class="navout" id="navOut">退出</button>
       </div>`;
+    $('navPw').onclick = () => openLogin('setpw');
     $('navOut').onclick = logout;
   } else {
     box.innerHTML = '<button class="btn-primary nav-cta" id="navLogin">登录</button>';
@@ -125,16 +127,16 @@ const AM = {
   conf: {
     code:  { title: '验证码登录', sub: '填邮箱收一个 6 位验证码，第一次登录自动建账号。',
              tip: '忘了密码也走这条路：能收信就能进，进去再设一个新密码。',
-             go: '登录', code: 1, pw: 0, pw2: 0, tabs: 1 },
+             email: 1, go: '登录', code: 1, pw: 0, pw2: 0, tabs: 1 },
     pw:    { title: '密码登录', sub: '用注册时设的密码登录。',
              tip: '密码忘了？切回「验证码」，用邮箱收个码进来重设。',
-             go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1 },
+             email: 1, go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1 },
     reg:   { title: '注册', sub: '邮箱收验证码，再设一个密码，以后用密码直接登。',
              tip: '注册后，对话记录和长期偏好都挂在这个账号下，换设备也在。',
-             go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1 },
+             email: 1, go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1 },
     setpw: { title: '设置密码', sub: '给这个账号设个密码，下次不用等邮件。',
              tip: '密码只存哈希（scrypt + 随机盐），服务端看不到明文。',
-             go: '设置密码', code: 0, pw: 1, pw2: 1, tabs: 0 },
+             go: '设置密码', email: 0, code: 0, pw: 1, pw2: 1, tabs: 0 },
   },
 };
 
@@ -146,6 +148,7 @@ function setAmMode(mode) {
   $('amSub').textContent = c.sub;
   $('amTip').textContent = c.tip;
   $('amGo').textContent = c.go;
+  $('amEmailRow').hidden = !c.email;
   $('amCodeRow').hidden = !c.code;
   $('amPwRow').hidden = !c.pw;
   $('amPw2Row').hidden = !c.pw2;
