@@ -362,6 +362,30 @@ def _nonmonotonic_ranges(tsx: str) -> list[str]:
     return bad
 
 
+_ABS_POS = re.compile(r"position:\s*['\"]absolute['\"]")
+
+
+def _check_layout(tsx: str) -> list[str]:
+    """多个绝对定位的文字块——叠字的主要来源。
+
+    正规写法：文字走 flex 纵向流式（justifyContent + flexDirection + gap），
+    absolute 只留给装饰层（背景块/网格/光斑），装饰层还得压在文字下面。
+    静态精确分析布局不现实，这里只抓典型翻车：
+    同一组件里 3 个以上 absolute，且每个后面紧跟着文字内容 → 基本就是每行字各自定位。
+    """
+    risky = 0
+    for m in _ABS_POS.finditer(tsx):
+        window = tsx[m.end(): m.end() + 300]
+        if re.search(r"[\u4e00-\u9fff]|\{title|\{lines|\{item|\{line\b", window):
+            risky += 1
+    if risky >= 3:
+        return [
+            f"有 {risky} 个绝对定位的文字块，极易叠字——"
+            f"文字改用 flex 纵向排列（flexDirection:'column' + gap），absolute 只留给装饰层"
+        ]
+    return []
+
+
 def check_shot_tsx(tsx: str, shot: Shot) -> list[str]:
     failures: list[str] = []
     flat = tsx.strip()
@@ -404,6 +428,7 @@ def check_shot_tsx(tsx: str, shot: Shot) -> list[str]:
     nonmono = _nonmonotonic_ranges(flat)
     if nonmono:
         failures.append(f"interpolate inputRange 不单调（运行时报错黑屏）: {nonmono}")
+    failures.extend(_check_layout(flat))
     return failures
 
 

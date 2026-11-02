@@ -165,6 +165,42 @@ check("参数块里带了「正文字色」", "正文字色" in prompt)
 check("提示词禁止绝对定位叠字", "position:'absolute'" in SHOT_SYSTEM or "position: 'absolute'" in SHOT_SYSTEM or "absolute" in SHOT_SYSTEM)
 check("提示词要求用给定文字色", "正文字色" in SHOT_SYSTEM)
 
+print("=== 10. 布局闸门：绝对定位叠字 ===")
+from app.pipeline.remotion_video import _check_layout  # noqa: E402
+
+flex_ok = ("const A = () => <AbsoluteFill style={{ justifyContent: 'center' }}>"
+           "<div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>"
+           "<span>{title}</span></div></AbsoluteFill>;")
+check("flex 纵向流式 → 放行", len(_check_layout(flex_ok)) == 0)
+
+one_abs = ("const A = () => <AbsoluteFill>"
+           "<div style={{ position: 'absolute', top: 0, left: 0, width: 100, height: 2, background: accent }} />"
+           "<div style={{ display: 'flex' }}>{title}</div></AbsoluteFill>;")
+check("单个 absolute 装饰层 → 放行", len(_check_layout(one_abs)) == 0)
+
+bad_layout = """
+const A = () => <>
+  <div style={{ position: 'absolute', top: 100 }}>第一行文字</div>
+  <div style={{ position: 'absolute', top: 200 }}>第二行文字</div>
+  <div style={{ position: 'absolute', top: 200 }}>第三行文字</div>
+  <div style={{ position: 'absolute', top: 300 }}>{title}</div>
+</>;
+"""
+fails_layout = _check_layout(bad_layout)
+check("4 个绝对定位文字块 → 判叠字", len(fails_layout) > 0,
+      fails_layout[0][:60] if fails_layout else "（没报！）")
+
+print("=== 11. 布局闸门接进了 check_shot_tsx ===")
+from app.pipeline.remotion_video import check_shot_tsx  # noqa: E402
+
+bad_shot = _make_shot()
+all_fails = check_shot_tsx(bad_layout, bad_shot)
+check("叠字代码整体判废", any("叠字" in f or "绝对定位" in f for f in all_fails),
+      next((f for f in all_fails if "叠字" in f or "绝对定位" in f), "（没进 check_shot_tsx！）"))
+
+good_fails = check_shot_tsx(GOOD_TSX, bad_shot)
+check("合格代码不受影响", len(good_fails) == 0, good_fails)
+
 print()
 print("端到端全部通过 ✅" if ok else "仍有失败项 ❌")
 sys.exit(0 if ok else 1)
