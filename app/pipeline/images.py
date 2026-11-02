@@ -1,20 +1,25 @@
-"""文章配图：把 compose 阶段规划好的 prompt 变成真图。
+"""文章配图：把 compose 规划好的图位变成真图片。
+
+两条来源，用 IMAGE_SOURCE 选：
+    tavily   用 Tavily 搜真实图片——复用已有 TAVILY_API_KEY，不额外花钱，
+             热点/新闻类文案的现场图比 AI 生成的更有说服力。代价是版权：
+             新闻图有版权，对外发布前需自行确认授权。
+    ai       用图像 API 生成——无版权风险、贴合文案，但按张计费。
+    auto     默认。先搜真实图，搜不到再 AI 生成（两边都配了 key 时的最优解）。
+    其它值   等同关闭，正文保留「🖼 配图位」占位。
 
 三个设计取舍，都是踩出来的：
 
-1. **生成后立刻下载存本地**。多数图像 API 返回临时 URL（硅基流动只有 1 小时），
-   直接引用的话，用户第二天打开文章就是一片裂图。
+1. **拿到就立刻下载存本地**。图床返回的是临时 URL（硅基流动只 1 小时），
+   外链直接写进产物的话，用户第二天打开就是一片裂图。
 
-2. **并行生成**。三张图串行要 40-60 秒，并行压到 15-20 秒——文章本来就要跑三分钟，
+2. **并行取图**。三张串行要 40-60 秒，并行压到 15-20 秒——文章本来就要跑三分钟，
    配图不该再拖一截。
 
 3. **任何一张失败就保留占位**。配图是加分项不是关键路径，
    不能因为一张图挂了把整篇文章搞失败。
 
-没配 IMAGE_API_KEY 时整个模块自动跳过，正文保持「🖼 配图位」占位——
-和接入前的行为完全一致，不会因为没配 key 就报错。
-
-接口按硅基流动的格式写（OpenAI 兼容），换别家改 IMAGE_BASE_URL + IMAGE_MODEL 即可：
+图像生成部分按硅基流动的格式写（OpenAI 兼容），换别家改 IMAGE_BASE_URL + IMAGE_MODEL：
     POST {base}/v1/images/generations
     {"model": ..., "prompt": ..., "image_size": "1024x576", "batch_size": 1}
     → {"images": [{"url": "..."}]}
@@ -40,7 +45,24 @@ _PLACEHOLDER = re.compile(r"!\[([^\]]*)\]\(prompt:\s*([^)]*)\)")
 
 
 def enabled() -> bool:
-    return bool(os.environ.get("IMAGE_API_KEY", "").strip())
+    """有没有任何一条能出图的路子。
+
+    真实图走 Tavily（复用既有 TAVILY_API_KEY，不额外花钱），
+    AI 生成走图像 API（IMAGE_API_KEY）。两者都没配就整段跳过。
+    """
+    src = (os.environ.get("IMAGE_SOURCE", "auto") or "auto").strip().lower()
+    if src == "tavily":
+        return bool(os.environ.get("TAVILY_API_KEY", "").strip())
+    if src == "ai":
+        return bool(os.environ.get("IMAGE_API_KEY", "").strip())
+    return bool(os.environ.get("TAVILY_API_KEY", "").strip()
+                or os.environ.get("IMAGE_API_KEY", "").strip())
+
+
+def _source() -> str:
+    """auto（默认，真实图优先）/ tavily（只用真实图）/ ai（只用 AI 生成）/ off。"""
+    return (os.environ.get("IMAGE_SOURCE", "auto") or "auto").strip().lower()
+
 
 
 def _cfg() -> tuple[str, str, str]:
@@ -85,6 +107,69 @@ async def generate_one(prompt: str) -> bytes | None:
         return None
 
 
+_MIN_BYTES = 8 * 1024   # 小于这个的多半是图标、占位图或加载失败的空响应
+
+
+async def _download_image(url: str) -> bytes | None:
+    """下载图片，并确认它真的是一张能用的图（不是 404 页、图表、超小图标）。"""
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code >= 400:
+                return None
+            ctype = (r.headers.get("content-type") or "").lower()
+            if ctype and not ctype.startswith("image/"):
+                return None          # 有些站会把图片链接重定向到 HTML 页
+            if len(r.content) < _MIN_BYTES:
+                return None
+            return r.content
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+async def search_real_image(query: str, limit: int = 3) -> bytes | None:
+    """用 Tavily 搜真实图片，返回第一张能下载的。
+
+    对热点/新闻类文案，真实现场图比 AI 生成的更有说服力，还不花图像 API 的钱。
+    代价是版权：新闻图有版权，对外正式发布前要自行确认授权，这里只做技术打通。
+    """
+    from .search import SearchError, search
+
+    q = (query or "").strip()
+    if not q:
+        return None
+    try:
+        res = await search(q, max_results=3, with_images=True)
+    except SearchError:
+        return None
+    for img in res.images[:limit]:
+        data = await _download_image(str(img.get("url") or ""))
+        if data:
+            return data
+    return None
+
+
+async def _pick(desc: str, prompt: str) -> bytes | None:
+    """按 IMAGE_SOURCE 决定这张图从哪来。
+
+    auto（默认）：先用 Tavily 搜真实图，搜不到再 AI 生成
+    tavily      ：只用真实图（完全不花钱）
+    ai          ：只用 AI 生成（无版权风险）
+    """
+    src = _source()
+    if src in ("auto", "tavily"):
+        data = await search_real_image(desc)
+        if data:
+            return data
+        if src == "tavily":
+            return None
+    if src in ("auto", "ai") and os.environ.get("IMAGE_API_KEY", "").strip():
+        return await generate_one(prompt)
+    return None
+
+
 async def fill_placeholders(
     body: str, out_dir: Path, url_prefix: str = "/img"
 ) -> tuple[str, int]:
@@ -99,13 +184,16 @@ async def fill_placeholders(
     if not total:
         return body, 0
 
-    # 只取前 N 个 prompt 去生成（控成本），按出现顺序
-    prompts = [m.group(2).strip() for m in _PLACEHOLDER.finditer(body)][:MAX_IMAGES]
-    if not prompts:
+    hits = list(_PLACEHOLDER.finditer(body))[:MAX_IMAGES]
+    if not hits:
         return body, 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = await asyncio.gather(*(generate_one(p) for p in prompts))
+    # group(1) 是图的说明（短，像新闻标题）→ 拿去搜真实图；
+    # group(2) 是生图 prompt（长，描述画面）→ 拿去 AI 生成。
+    results = await asyncio.gather(
+        *(_pick(m.group(1).strip(), m.group(2).strip()) for m in hits)
+    )
 
     it = iter(results)
     seq = {"n": 0}
