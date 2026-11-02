@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -39,10 +39,15 @@ from .pipeline.memory import init_memory, get_memory  # noqa: E402
 
 memory = init_memory(settings.data_dir / "memory.db")
 
-# 基于 IP 的配额 + 访问记录
+# 基于 IP 的配额 + 访问记录（键现在是账号 ID，IP 只留档）
 from .quota import QuotaStore, derive_session_id, get_quota  # noqa: E402
 
 quota = get_quota(settings.data_dir)
+
+# 账号体系：邮箱验证码登录 + 会话归属
+from . import auth as auth_mod  # noqa: E402
+
+auth_store = auth_mod.get_auth(settings.data_dir)
 
 # 会话状态落盘目录（热榜条目/搜过的词/产物，重启不丢）
 from .agents.session_context import session_memory  # noqa: E402
@@ -69,6 +74,32 @@ def require_admin(request: Request) -> None:
     auth = request.headers.get("x-admin-key", "")
     if auth != pwd:
         raise HTTPException(401, "管理员口令错误")
+
+
+# ---------------------------------------------------------------- 登录态
+
+def current_user(request: Request) -> dict | None:
+    """从 Cookie 读登录态。没登录返回 None（落地页正常浏览，只是进不了工作台）。"""
+    token = request.cookies.get(auth_mod.COOKIE_NAME) or ""
+    if not token:
+        token = request.headers.get("x-refract-token", "")
+    return auth_store.user_by_token(token)
+
+
+def require_user(request: Request) -> dict:
+    u = current_user(request)
+    if not u:
+        raise HTTPException(401, "请先登录")
+    return u
+
+
+def _set_login_cookie(resp, token: str) -> None:
+    # 服务器是 http（还没上 https），这里不能带 Secure，否则浏览器直接不存。
+    # HttpOnly 挡住 XSS 偷 token；SameSite=Lax 挡住别的站点发起的跨站请求。
+    resp.set_cookie(
+        auth_mod.COOKIE_NAME, token,
+        max_age=auth_mod.TOKEN_TTL, httponly=True, samesite="lax", path="/",
+    )
 
 
 class GenerateIn(BaseModel):
@@ -175,6 +206,117 @@ class RouteIn(BaseModel):
     route: str = Field(pattern="^(text|video)$")
     # 有序降级链，第一个就是主力
     chain: list[str] = Field(min_length=1, max_length=4)
+
+
+# ---------------------------------------------------------------- 账号 / 登录
+
+# 发码接口按 IP 限流：邮箱维度已经限了（60s/次、5 次/小时），这里防的是
+# 换邮箱刷——同 IP 每小时最多 15 次
+_SEND_HITS: dict[str, list[float]] = {}
+
+
+def _ip_send_guard(ip: str) -> None:
+    now = time.time()
+    hits = [t for t in _SEND_HITS.get(ip, []) if now - t < 3600]
+    if len(hits) >= 15:
+        raise HTTPException(429, "发送太频繁了，过会儿再试")
+    hits.append(now)
+    _SEND_HITS[ip] = hits
+
+
+class EmailIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+
+
+class VerifyIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    code: str = Field(min_length=4, max_length=8)
+
+
+def _user_public(u: dict) -> dict:
+    return {"id": u["id"], "email": u["email"]}
+
+
+@app.post("/api/auth/send-code")
+async def auth_send_code(payload: EmailIn, request: Request) -> dict[str, Any]:
+    """发登录验证码。邮箱没注册过就是注册，不需要单独「注册」按钮。"""
+    _ip_send_guard(client_ip(request))
+    try:
+        # smtplib 是阻塞的，一次握手 1-3 秒，不能卡住事件循环
+        return await asyncio.to_thread(
+            auth_store.issue_code, payload.email, client_ip(request)
+        )
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/auth/verify")
+async def auth_verify(payload: VerifyIn, request: Request) -> JSONResponse:
+    try:
+        token, user = await asyncio.to_thread(auth_store.verify, payload.email, payload.code)
+    except auth_mod.AuthError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    resp = JSONResponse({
+        "ok": True,
+        "user": _user_public(user),
+        "is_new": user.get("created", False),
+        "conversations": auth_store.list_conversations(user["id"]),
+    })
+    _set_login_cookie(resp, token)
+    # 再种一个「登录过」的标记（非 HttpOnly）：首屏内联脚本靠它决定要不要
+    # 直接铺工作台，否则已登录用户每次刷新都先闪一下落地页
+    resp.set_cookie("refract_seen", "1", max_age=auth_mod.TOKEN_TTL,
+                    httponly=False, samesite="lax", path="/")
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request) -> JSONResponse:
+    auth_store.logout(request.cookies.get(auth_mod.COOKIE_NAME) or "")
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth_mod.COOKIE_NAME, path="/")
+    resp.delete_cookie("refract_seen", path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request) -> dict[str, Any]:
+    """前端每次加载都问一次：登录了就顺手把会话列表带回去，少一次往返。"""
+    u = current_user(request)
+    if not u:
+        return {"logged_in": False}
+    convs = auth_store.list_conversations(u["id"])
+    return {"logged_in": True, "user": _user_public(u), "conversations": convs}
+
+
+class ConvIn(BaseModel):
+    title: str = Field(default="", max_length=60)
+
+
+@app.get("/api/conversations")
+async def list_conversations(request: Request) -> dict[str, Any]:
+    u = require_user(request)
+    return {"conversations": auth_store.list_conversations(u["id"])}
+
+
+@app.post("/api/conversations")
+async def new_conversation(request: Request, payload: ConvIn | None = None) -> dict[str, Any]:
+    u = require_user(request)
+    conv = auth_store.create_conversation(u["id"], (payload.title if payload else "") or "")
+    return {"conversation": conv}
+
+
+@app.delete("/api/conversations/{cid}")
+async def del_conversation(cid: str, request: Request) -> dict[str, Any]:
+    u = require_user(request)
+    if not auth_store.delete_conversation(cid, u["id"]):
+        raise HTTPException(404, "会话不存在")
+    # 顺带把这条会话的工作记忆/历史文件删掉，别留孤儿
+    from .session_history import get_history
+
+    session_memory.forget(cid)
+    get_history().drop(cid)
+    return {"ok": True}
 
 
 @app.get("/api/models")
@@ -346,15 +488,15 @@ async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
     if not payload.input.strip() and not payload.url.strip():
         raise HTTPException(400, "input 和 url 至少给一个")
 
-    ip = client_ip(request)
-    ok, reason = quota.can(ip, "article")
+    user = require_user(request)
+    ok, reason = quota.can(user["id"], "article")
     if not ok:
         raise HTTPException(429, reason)
 
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(ip, "article", f"/r/{task_id}")
+    quota.consume(user["id"], "article", f"/r/{task_id}")
     asyncio.create_task(
         _run(task, payload.input, payload.url, payload.platform, payload.words, payload.style)
     )
@@ -366,10 +508,8 @@ async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
 
 class ChatIn(BaseModel):
     input: str = Field(min_length=1, max_length=4000)
-    session_id: str = Field(default="", max_length=64)
-    # 浏览器本地存的持久 ID（localStorage）。长期记忆挂在这上面，不挂 session_id——
-    # session_id 是 IP 派生的，换 Wi-Fi / 切流量就变，长期记忆会跟着断
-    user_key: str = Field(default="", max_length=64)
+    # 会话（不是「会话 id = 用户」了：一个账号可以有很多条会话，像聊天软件）
+    conversation_id: str = Field(default="", max_length=64)
 
 
 @app.post("/api/chat")
@@ -379,28 +519,46 @@ async def chat(payload: ChatIn, request: Request) -> dict[str, str]:
     和 /api/generate 的分工：那边是显式板块（用户已选好「文章/视频」），
     这边用户只说话，做什么由 Supervisor 规划——包括「什么都不做，回一句话」。
 
-    配额：按客户端 IP 记一次「对话」；session_id 由 IP 派生，自动开启跨轮上下文。
+    归属：必须登录。没带 conversation_id 就新开一条，带了要校验它属于本人。
     """
     if not settings.is_ready:
         raise HTTPException(400, "未配置 DEEPSEEK_API_KEY，且未开启 LLM_MOCK")
 
+    user = require_user(request)
     ip = client_ip(request)
-    ok, reason = quota.can(ip, "chat")
+    ok, reason = quota.can(user["id"], "chat")
     if not ok:
         raise HTTPException(429, reason)
 
-    # session_id 由 IP 派生：同一 IP 自动同一会话，跨轮上下文 + 配额都挂在这上面
-    sid = payload.session_id or derive_session_id(ip)
+    cid = payload.conversation_id.strip()
+    if cid:
+        conv = auth_store.get_conversation(cid)
+        if not conv or conv["user_id"] != user["id"]:
+            raise HTTPException(404, "这条会话不存在（或者不是你的）")
+    else:
+        cid = auth_store.create_conversation(user["id"])["id"]
+
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(ip, "chat", task_id)  # artifact=task_id，流水表可反查这一轮对话
-    asyncio.create_task(_run_chat(task, task_id, payload.input, sid, ip, payload.user_key))
-    return {"task_id": task_id, "session_id": sid}
+    quota.consume(user["id"], "chat", task_id)  # artifact=task_id，流水表可反查这一轮对话
+    asyncio.create_task(_run_chat(task, task_id, payload.input, cid, ip, user["id"]))
+    return {"task_id": task_id, "conversation_id": cid, "session_id": cid}
 
 
 async def _run_chat(task: TaskState, task_id: str, text: str, session_id: str = "",
                     ip: str = "", user_key: str = "") -> None:
+    """session_id 在这里就是 conversation_id；user_key 是账号 ID。
+
+    两个分开传是因为职责不同：历史/工作记忆按会话存（多条会话各记各的），
+    长期记忆按账号存（跨会话、跨设备都该记得你）。
+    """
+    # 会话列表的标题取第一句话，之后不再改；顺手把活跃时间推新
+    try:
+        auth_store.touch_conversation(session_id, text[:40])
+    except Exception:
+        pass
+
     from .agents.memory_keeper import MemoryKeeper
     from .agents.session_context import session_memory
     from .agents.supervisor import handle_chat
@@ -856,15 +1014,15 @@ async def video_render(payload: RenderIn, request: Request) -> dict[str, str]:
         except Exception as exc:
             raise HTTPException(400, f"方案格式不对：{exc}") from exc
 
-    ip = client_ip(request)
-    ok, reason = quota.can(ip, "video")
+    user = require_user(request)
+    ok, reason = quota.can(user["id"], "video")
     if not ok:
         raise HTTPException(429, reason)
 
     task_id = uuid.uuid4().hex[:12]
     task = TaskState(task_id)
     TASKS[task_id] = task
-    quota.consume(ip, "video", f"/v/{task_id}")
+    quota.consume(user["id"], "video", f"/v/{task_id}")
     asyncio.create_task(_run_video(task, task_id, payload, plan_obj))
     return {"task_id": task_id}
 
@@ -1156,9 +1314,14 @@ async def runs_page() -> FileResponse:
 
 
 @app.get("/api/session/{session_id}")
-async def session_history(session_id: str) -> dict[str, Any]:
-    """返回某个会话的完整历史（按 session_id，同一 IP 刷新后恢复对话）。"""
+async def session_history(session_id: str, request: Request) -> dict[str, Any]:
+    """返回某条会话的完整历史。必须登录，且这条会话得是你的。"""
     from .session_history import get_history
+
+    user = require_user(request)
+    conv = auth_store.get_conversation(session_id)
+    if not conv or conv["user_id"] != user["id"]:
+        raise HTTPException(404, "会话不存在")
 
     msgs = get_history().history(session_id)
     return {"session_id": session_id, "messages": msgs}
@@ -1177,7 +1340,12 @@ async def admin_page() -> FileResponse:
 @app.get("/api/admin/users")
 async def admin_users(request: Request) -> dict[str, Any]:
     require_admin(request)
-    return {"users": quota.users()}
+    users = quota.users()
+    # 有账号的补上邮箱：后台看「谁在用」比看一串 u_xxx 有用
+    for u in users:
+        acct = auth_store.user_by_id(u["session_id"])
+        u["email"] = acct["email"] if acct else ""
+    return {"users": users}
 
 
 @app.get("/api/admin/session/{session_id}")

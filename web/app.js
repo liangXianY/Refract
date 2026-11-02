@@ -5,6 +5,215 @@ const $ = (id) => document.getElementById(id);
 
 /* ============================ 通用 ============================ */
 
+/* ============================ 账号 / 会话 ============================
+   身份在服务端（HttpOnly Cookie），前端只缓存一份用于渲染。
+   会话列表也由服务端给：换设备、换网络都能看到同一批对话。 */
+
+const AUTH = { user: null, conversations: [], cid: '' };
+
+function fmtTime(ts) {
+  const t = new Date(ts * 1000), diff = (Date.now() - t.getTime()) / 1000;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} 天前`;
+  return `${t.getMonth() + 1}/${t.getDate()}`;
+}
+
+function renderNavAuth() {
+  const box = $('navAuth');
+  if (!box) return;
+  if (AUTH.user) {
+    const initial = (AUTH.user.email || '?').slice(0, 1).toUpperCase();
+    box.innerHTML = `
+      <div class="navuser" title="${esc(AUTH.user.email)}">
+        <span class="av">${esc(initial)}</span>
+        <span class="em">${esc(AUTH.user.email)}</span>
+        <button class="navout" id="navOut">退出</button>
+      </div>`;
+    $('navOut').onclick = logout;
+  } else {
+    box.innerHTML = '<button class="btn-primary nav-cta" id="navLogin">登录</button>';
+    $('navLogin').onclick = openLogin;
+  }
+}
+
+function renderConvs() {
+  const list = $('convList');
+  if (!list) return;
+  if (!AUTH.user) { list.innerHTML = ''; $('convFoot').innerHTML = ''; return; }
+  if (!AUTH.conversations.length) {
+    list.innerHTML = '<p class="convempty">还没有对话。<br>说第一句话就会自动建一条。</p>';
+  } else {
+    list.innerHTML = AUTH.conversations.map(c => `
+      <button class="convi${c.id === AUTH.cid ? ' on' : ''}" data-cid="${esc(c.id)}">
+        <span class="t">${esc(c.title || '新对话')}</span>
+        <span class="m">${fmtTime(c.updated_at)}</span>
+        <span class="x" data-del="${esc(c.id)}" title="删除这条会话">×</span>
+      </button>`).join('');
+  }
+  $('convFoot').innerHTML = `<span>${AUTH.conversations.length} 条会话</span>
+    <span>${esc((AUTH.user.email || '').split('@')[0])}</span>`;
+  list.querySelectorAll('.convi').forEach(el => {
+    el.onclick = (e) => {
+      const del = e.target.closest('[data-del]');
+      if (del) { e.stopPropagation(); delConv(del.dataset.del); return; }
+      openConversation(el.dataset.cid);
+    };
+  });
+}
+
+function setCurrentConv(cid) {
+  AUTH.cid = cid || '';
+  if (AUTH.cid) localStorage.setItem('refract_cid', AUTH.cid);
+  else localStorage.removeItem('refract_cid');
+  renderConvs();
+}
+
+async function refreshAuth() {
+  try {
+    const d = await (await fetch('/api/auth/me')).json();
+    AUTH.user = d.logged_in ? d.user : null;
+    AUTH.conversations = d.conversations || [];
+  } catch { AUTH.user = null; AUTH.conversations = []; }
+  renderNavAuth();
+  renderConvs();
+  return AUTH.user;
+}
+
+async function syncConvs() {
+  if (!AUTH.user) return;
+  try {
+    const d = await (await fetch('/api/conversations')).json();
+    AUTH.conversations = d.conversations || [];
+    renderConvs();
+  } catch { /* 列表拉不到不影响聊天 */ }
+}
+
+async function newConversation() {
+  setCurrentConv('');
+  clearChat();
+  $('chatInput').focus();
+}
+
+async function delConv(cid) {
+  if (!confirm('删掉这条会话？对话记录会一起删掉，恢复不了。')) return;
+  const r = await fetch(`/api/conversations/${cid}`, { method: 'DELETE' });
+  if (!r.ok) return;
+  AUTH.conversations = AUTH.conversations.filter(c => c.id !== cid);
+  if (AUTH.cid === cid) { AUTH.cid = ''; localStorage.removeItem('refract_cid'); clearChat(); }
+  renderConvs();
+}
+
+async function logout() {
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { /* 断网也要能退 */ }
+  AUTH.user = null; AUTH.conversations = []; AUTH.cid = '';
+  localStorage.removeItem('refract_cid');
+  renderNavAuth();
+  renderConvs();
+  clearChat();
+  closeLogin();
+  goLanding(true);
+}
+
+/* ---------------- 登录弹窗 ---------------- */
+
+let sendTimer = null;
+
+function openLogin() {
+  $('authModal').hidden = false;
+  amSay('');
+  setTimeout(() => $('amEmail').focus({ preventScroll: true }), 60);
+}
+
+function closeLogin() {
+  $('authModal').hidden = true;
+  if (sendTimer) { clearInterval(sendTimer); sendTimer = null; }
+}
+
+function amSay(msg, ok = false) {
+  const el = $('amMsg');
+  el.textContent = msg || '';
+  el.className = 'am-msg' + (ok ? ' ok' : '');
+}
+
+async function sendCode() {
+  const email = $('amEmail').value.trim();
+  if (!email) { amSay('先填邮箱'); return; }
+  const btn = $('amSend');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth/send-code', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || '发送失败');
+    if (d.dev_code) {
+      // 服务器没配 SMTP 的开发模式：直接把码填好，不用去翻日志
+      $('amCode').value = d.dev_code;
+      amSay('开发模式：验证码已自动填入', true);
+    } else {
+      amSay(`${Math.round((d.ttl || 300) / 60)} 分钟内有效，去邮箱收一下`, true);
+    }
+    let left = 60;
+    btn.textContent = `${left}s`;
+    sendTimer = setInterval(() => {
+      left -= 1;
+      if (left <= 0) {
+        clearInterval(sendTimer); sendTimer = null;
+        btn.disabled = false; btn.textContent = '发送验证码';
+      } else btn.textContent = `${left}s`;
+    }, 1000);
+  } catch (e) {
+    amSay(e.message);
+    btn.disabled = false;
+  }
+}
+
+async function doLogin() {
+  const email = $('amEmail').value.trim();
+  const code = $('amCode').value.trim();
+  if (!email || !code) { amSay('邮箱和验证码都要填'); return; }
+  const btn = $('amGo');
+  btn.disabled = true;
+  btn.textContent = '登录中…';
+  try {
+    const r = await fetch('/api/auth/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, code }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || '登录失败');
+    AUTH.user = d.user;
+    AUTH.conversations = d.conversations || [];
+    AUTH.cid = '';
+    localStorage.removeItem('refract_cid');
+    closeLogin();
+    renderNavAuth();
+    renderConvs();
+    clearChat();
+    goWorkbench('chat', true);
+    if (AUTH.conversations.length) await openConversation(AUTH.conversations[0].id);
+    else $('chatInput').focus({ preventScroll: true });
+  } catch (e) {
+    amSay(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '登录';
+  }
+}
+
+$('convNew').onclick = newConversation;
+$('amSend').onclick = sendCode;
+$('amGo').onclick = doLogin;
+$('amCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+$('amEmail').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCode(); });
+document.querySelectorAll('[data-auth-close]').forEach(el => { el.onclick = closeLogin; });
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('authModal').hidden) closeLogin();
+});
+
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -66,16 +275,6 @@ function renderMd(text, withCursor) {
   return out.join('\n');
 }
 
-/** 浏览器本地的持久身份。长期记忆挂在这上面：换网络 IP 变了也不会失忆。 */
-function userKey() {
-  let k = localStorage.getItem('refract_uid');
-  if (!k) {
-    k = 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-    localStorage.setItem('refract_uid', k);
-  }
-  return k;
-}
-
 /** 起任务 + 读 SSE。onEvent 收到每一个事件。 */
 async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 90000) {
   const resp = await fetch(path, {
@@ -88,8 +287,10 @@ async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 900
     try { detail = (await resp.json()).detail || detail; } catch { /* 保持原样 */ }
     throw new Error(detail);
   }
-  const { task_id, session_id } = await resp.json();
-  if (session_id) localStorage.setItem('refract_sid', session_id);
+  const d = await resp.json();
+  const task_id = d.task_id;
+  // 会话 id 由后端定（没带就新建一条），回来要记住，侧栏高亮也跟着挪
+  if (d.conversation_id) setCurrentConv(d.conversation_id);
 
   return new Promise((resolve, reject) => {
     const es = new EventSource(`/api/tasks/${task_id}/events`);
@@ -211,6 +412,8 @@ function enterWorkbench(mode) {
 }
 
 function goWorkbench(mode = 'chat', instant = false) {
+  // 工作台要登录：历史、长期记忆、配额都挂账号，游客进来只会是一张空页面
+  if (!AUTH.user) { openLogin(); return; }
   if (transitioning) return;
   const wasWorkbench = document.body.dataset.view === 'workbench';
   // 内联脚本可能已把 data-view 预置为 workbench（防闪烁），
@@ -362,7 +565,7 @@ addEventListener('resize', updateArtTabInd);
 const chatlog = $('chatlog');
 
 function addMsg(role, html) {
-  $('chatempty')?.remove();
+  const _ce = $('chatempty'); if (_ce) _ce.hidden = true;
   const el = document.createElement('div');
   el.className = `msg ${role}`;
   el.innerHTML = `<div class="av">${role === 'user' ? '你' : 'R'}</div><div class="body">${html}</div>`;
@@ -591,7 +794,7 @@ async function sendChat(text) {
   try {
     $('chatHint').textContent = '主 Agent 规划中…';
     await runTask(
-      { input: text, session_id: localStorage.getItem('refract_sid') || '', user_key: userKey() },
+      { input: text, conversation_id: AUTH.cid || '' },
       (ev) => { turn.handle(ev); if (ev.type === 'plan') $('chatHint').textContent = `执行 ${ev.steps.length} 步`; },
       '/api/chat'
     );
@@ -611,6 +814,7 @@ async function sendChat(text) {
     chatting = false;
     currentAbort = null;
     setSendState('idle');
+    syncConvs();   // 新会话/标题/时间变了，侧栏跟着刷新
   }
 }
 
@@ -637,15 +841,19 @@ $('chatSend').onclick = () => {
   }
 };
 
-// 刷新时按 session_id 拉历史，逐轮重放；返回是否有非空历史（决定直达工作台还是先看落地页）
-async function loadHistory() {
-  const sid = localStorage.getItem('refract_sid');
-  if (!sid) return false;
+// 打开一条会话：清空当前对话，把历史事件逐条重放一遍。
+// 重放的好处是前端不用区分「这是历史还是实时」——同一套 onEvent。
+async function openConversation(cid) {
+  if (!cid) return;
+  setCurrentConv(cid);
+  clearChat();
   try {
-    const r = await fetch(`/api/session/${sid}`);
-    if (!r.ok) return false;
+    const r = await fetch(`/api/session/${cid}`);
+    if (!r.ok) return;
     const { messages } = await r.json();
-    if (!messages || !messages.length) return false;
+    if (!messages || !messages.length) return;
+    const ce = $('chatempty');
+    if (ce) ce.hidden = true;
     for (const m of messages) {
       if (m.role === 'user') {
         addMsg('user', esc(m.text).replace(/\n/g, '<br/>'));
@@ -655,8 +863,16 @@ async function loadHistory() {
         turn.finish();
       }
     }
-    return true;
-  } catch { return false; /* 拉不到历史就算了，不阻塞 */ }
+    chatlog.scrollTop = chatlog.scrollHeight;
+  } catch { /* 拉不到历史就当空会话，不阻塞 */ }
+}
+
+// 清掉当前这一屏消息，但把空态提示留着（新建对话时要看到引导）
+function clearChat() {
+  const log = $('chatlog');
+  [...log.children].forEach(el => { if (el.id !== 'chatempty') el.remove(); });
+  const ce = $('chatempty');
+  if (ce) ce.hidden = false;
 }
 
 function autosize(el) {
@@ -1315,6 +1531,9 @@ $('vidInput').addEventListener('keydown', (e) => {
     $('modeText').textContent = h.mock ? 'MOCK 模式' : h.model;
   } catch { $('modeText').textContent = '离线'; }
 
+  // 先问服务端认不认识我：这决定了下面进落地页还是工作台
+  await refreshAuth();
+
   const QS = new URLSearchParams(location.search);
   const qm = QS.get('mode');
 
@@ -1341,10 +1560,15 @@ $('vidInput').addEventListener('keydown', (e) => {
   } else if (MODES.includes(qm)) {
     // ?mode=chat|article|video 深链直进工作台，不播转场
     goWorkbench(qm, true);
+  } else if (AUTH.user) {
+    // 已登录：直接进工作台，接上次那条会话；上次的没了就挑最近一条
+    goWorkbench('chat', true);
+    const last = localStorage.getItem('refract_cid');
+    const target = AUTH.conversations.some(c => c.id === last) ? last
+      : (AUTH.conversations[0] ? AUTH.conversations[0].id : '');
+    if (target) await openConversation(target);
   } else {
-    const hasHistory = await loadHistory();  // 同一 IP 刷新后恢复历史对话
-    if (hasHistory || localStorage.getItem('refract_view') === 'workbench') goWorkbench('chat', true);
-    else initLanding(true);
+    initLanding(true);
   }
   loadModels();
   updateModesInd();

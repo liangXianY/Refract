@@ -13,10 +13,12 @@
 </head>
 <body data-view="landing">
 <script>
-/* 提前定脉络，避免老用户刷新时落地页闪一下（JS 不可用时保持落地页，完整可读） */
+/* 只有「登录过」的人才预置工作台，避免未登录时闪出一张空白页。
+   cookie 是服务端登录时种的（refract_seen，非 HttpOnly，专门给这里判断用）。 */
 (function(){
   var q = new URLSearchParams(location.search).get('mode');
-  if ((q && q !== 'demo') || localStorage.getItem('refract_view') === 'workbench') {
+  var seen = /(^|;\s*)refract_seen=1/.test(document.cookie);
+  if ((q && q !== 'demo') || seen) {
     document.body.dataset.view = 'workbench';
   }
 })();
@@ -47,7 +49,7 @@
       <a href="https://github.com/liangXianY/Refract" target="_blank" rel="noopener" class="nav-gh">GitHub</a>
     </div>
     <div class="stat"><span class="dot" id="modeDot"></span><span id="modeText">检测中</span></div>
-    <button class="btn-primary nav-cta" data-go-workbench>开始创作</button>
+    <div class="navauth" id="navAuth"></div>
   </div>
 </nav>
 
@@ -167,33 +169,46 @@
 
 <!-- ============ 会话 ============ -->
 <section class="mode-panel on" id="modeChat">
-  <div class="chatwrap">
-    <div class="chatlog" id="chatlog">
-      <div class="chatempty" id="chatempty">
-        <div class="ce-ico">R</div>
-        <h3>想做什么，直接说</h3>
-        <p>我会先判断意图，再决定调哪个子 Agent：<br/>
-          「写篇公众号」「做个视频」「抓这个链接看看」</p>
-        <div class="ce-tips">
-          <button data-tip="从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构">写一篇文章</button>
-          <button data-tip="把这个项目做成 60 秒介绍视频">做一个视频</button>
-          <button data-tip="抓取 https://github.com/liangXianY/Refract 看看它做了什么">分析一个链接</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="chatbar">
-      <div class="chatinput">
-        <textarea id="chatInput" rows="1" placeholder="说点什么，比如：给这个项目写篇公众号，再配个视频"></textarea>
-        <button id="chatSend" title="发送" class="sendbtn idle">
-          <svg class="ic-send" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
-          <svg class="ic-stop" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
-          <span class="ic-spin"></span>
+  <div class="chatlayout">
+    <aside class="convside" id="convSide">
+      <div class="convtop">
+        <button class="newconv" id="convNew" title="开一条新对话">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          新对话
         </button>
       </div>
-      <div class="chatmeta">
-        <span id="chatHint">意图识别 → 子 Agent 调度</span>
-        <span id="chatCost">—</span>
+      <div class="convlist" id="convList"></div>
+      <div class="convfoot" id="convFoot"></div>
+    </aside>
+
+    <div class="chatwrap">
+      <div class="chatlog" id="chatlog">
+        <div class="chatempty" id="chatempty">
+          <div class="ce-ico">R</div>
+          <h3>想做什么，直接说</h3>
+          <p>我会先判断意图，再决定调哪个子 Agent：<br/>
+            「写篇公众号」「做个视频」「抓这个链接看看」</p>
+          <div class="ce-tips">
+            <button data-tip="从 GitHub 热榜挑一个项目，写篇公众号介绍它的架构">写一篇文章</button>
+            <button data-tip="把这个项目做成 60 秒介绍视频">做一个视频</button>
+            <button data-tip="抓取 https://github.com/liangXianY/Refract 看看它做了什么">分析一个链接</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chatbar">
+        <div class="chatinput">
+          <textarea id="chatInput" rows="1" placeholder="说点什么，比如：给这个项目写篇公众号，再配个视频"></textarea>
+          <button id="chatSend" title="发送" class="sendbtn idle">
+            <svg class="ic-send" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/></svg>
+            <svg class="ic-stop" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            <span class="ic-spin"></span>
+          </button>
+        </div>
+        <div class="chatmeta">
+          <span id="chatHint">意图识别 → 子 Agent 调度</span>
+          <span id="chatCost">—</span>
+        </div>
       </div>
     </div>
   </div>
@@ -310,6 +325,31 @@
 </footer>
 </main>
 
+<!-- ==================== 登录 ==================== -->
+<div class="authmodal" id="authModal" hidden>
+  <div class="am-back" data-auth-close></div>
+  <div class="am-card" role="dialog" aria-modal="true" aria-labelledby="amTitle">
+    <button class="am-x" data-auth-close aria-label="关闭">×</button>
+    <p class="am-kicker">REFRACT · ACCOUNT</p>
+    <h2 id="amTitle">登录 / 注册</h2>
+    <p class="am-sub">填邮箱收验证码就行，第一次登录自动建账号。</p>
+
+    <label class="lb" for="amEmail">邮箱</label>
+    <input id="amEmail" class="inp" type="email" placeholder="you@qq.com"
+           autocomplete="email" spellcheck="false">
+
+    <label class="lb mt" for="amCode">验证码</label>
+    <div class="am-code">
+      <input id="amCode" class="inp" inputmode="numeric" maxlength="6"
+             placeholder="6 位数字" autocomplete="one-time-code">
+      <button class="ghost" id="amSend">发送验证码</button>
+    </div>
+
+    <p class="am-msg" id="amMsg"></p>
+    <button class="primary am-go" id="amGo">登录</button>
+    <p class="am-tip">登录后对话存在账号下：换设备、换网络都能接着聊，长期偏好也跟着你。</p>
+  </div>
+</div>
+
 <script src="/web/app.js"></script>
-</body>
-</html>
+</body></html>

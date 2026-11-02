@@ -1,9 +1,10 @@
-"""基于 IP 的轻量配额 + 用户追踪。
+"""轻量配额 + 使用流水。
 
-设计（对齐需求）：
-- 不强制登录，用客户端 IP 派生 session_id，同一 IP = 同一个「匿名用户」
-- 永久配额：同一 IP 最多 10 轮对话 + 1 个视频 + 3 篇文章，用完成止，
-  管理员可重置、或把某 IP 设为不限
+设计：
+- 键（key）是「身份」：登录后是账号 ID（`u_xxx`），没有账号的调用方仍可用 IP
+  （后台/脚本）。账号 ID 直接当键用，IP 则哈希成匿名 ID——这样老数据不用迁移
+- 配额：每个账号最多 10 轮对话 + 1 个视频 + 3 篇文章，用完成止，
+  管理员可重置、或把某账号设为不限
 - 每次请求记录到 usage.json：IP、时间、动作（chat/video/article）、产物链接，
   管理员后台可查
 
@@ -75,8 +76,12 @@ class QuotaStore:
         }
         self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _sid(self, key: str) -> str:
+        """账号 ID 直接用；IP 哈希成匿名 ID（避免日志里裸 IP，也让老数据继续有效）。"""
+        return key if key.startswith("u_") else derive_session_id(key)
+
     def get(self, ip: str) -> UserUsage:
-        sid = derive_session_id(ip)
+        sid = self._sid(ip)
         u = self._users.get(sid)
         if u is None:
             now = datetime.now().isoformat(timespec="seconds")

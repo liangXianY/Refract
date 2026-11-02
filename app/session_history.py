@@ -110,6 +110,15 @@ class SessionHistory:
                 return {"q": q, "a": body}
         return None
 
+    def drop(self, session_id: str) -> None:
+        """删会话时一起删历史文件，别在磁盘上留孤儿。"""
+        p = self._path(session_id)
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
     def history_by_task(self, task_id: str) -> list[dict]:
         """遍历所有 session 找 task_id 对应的那两条消息（user + assistant）。
 

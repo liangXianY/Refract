@@ -260,6 +260,33 @@ MEM0_EMBED_DIMS=1024                 # bge-m3 是 1024 维，必须显式给
 
 ---
 
+### 账号：邮箱验证码，历史跟着人走
+
+最早用「IP 派生 session_id」认人，结果是：换 Wi-Fi 就换身份、同办公室互相串、
+手机和电脑不同步，用户看到的现象是「有时进主页、有时进一张空白聊天页」——
+因为前端靠本机 localStorage 里那个 IP 派生的 id 判断有没有历史，和服务端记的对不上。
+
+现在改成账号：
+
+- **登录**：邮箱 + 6 位验证码，第一次登录自动建账号，没有单独的注册流程。
+  验证码 5 分钟有效、一次性、同邮箱 60 秒 1 封 / 每小时 5 封、错 5 次作废
+- **会话列表**：`conversations` 表，一个账号多条会话，标题取第一句话，
+  按最近活跃排序。历史仍按会话存文件（`data/sessions/{cid}.json`）
+- **身份落在 Cookie**：`refract_auth`（HttpOnly，XSS 偷不到）+ `refract_seen`
+  （非 HttpOnly，只给首屏内联脚本判断「这人登录过」，避免刷新闪一下落地页）
+- **配额、长期记忆都挂账号**：换设备也认你；`user_id` 取代 `user_key`
+
+```bash
+# .env（QQ 邮箱为例，授权码不是登录密码）
+SMTP_HOST=smtp.qq.com
+SMTP_PORT=465
+SMTP_USER=you@qq.com
+SMTP_PASS=xxxxxxxxxxxxxxxx      # QQ 邮箱「设置 → 账户 → 生成授权码」
+```
+
+没配 SMTP 时，`/api/auth/send-code` 会明确报「服务器还没配发件邮箱」，
+不会假装发出去了。本地开发可以 `AUTH_DEV_CODE=1`，验证码直接回给前端、自动填进输入框。
+
 ## 快速开始
 
 ```bash

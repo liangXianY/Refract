@@ -1098,3 +1098,87 @@ textarea::placeholder{color:var(--dim)}
   .brand h1{display:none}
   .modes button{padding:6px 7px;font-size:10.5px}
 }
+
+/* ============================================================
+   账号体系：导航登录区 + 会话侧栏 + 登录弹窗
+   ============================================================ */
+
+/* 落地页不显示工作台的三个板块按钮（会话/文章/视频），进工作台才出现 */
+body[data-view="landing"] #modes{display:none}
+
+.navauth{display:flex;align-items:center;gap:10px}
+.navuser{display:flex;align-items:center;gap:8px;height:36px;padding:0 8px 0 4px;
+  border:1px solid var(--line);border-radius:999px;background:var(--surface)}
+.navuser .av{width:26px;height:26px;border-radius:50%;background:var(--accent-soft);
+  color:var(--accent-ink);display:grid;place-items:center;
+  font:600 11px/1 ui-monospace,Menlo,monospace;text-transform:uppercase}
+.navuser .em{font-size:var(--fs-small);color:var(--ink-2);max-width:148px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.navout{border:0;background:none;color:var(--dim);font-size:var(--fs-micro);
+  cursor:pointer;padding:2px 2px}
+.navout:hover{color:var(--err)}
+
+/* ---- 会话两栏 ---- */
+.chatlayout{height:100%;display:grid;grid-template-columns:248px minmax(0,1fr)}
+.convside{display:flex;flex-direction:column;min-height:0;
+  border-right:1px solid var(--line);padding:16px 12px 10px}
+.convtop{padding:0 2px 10px}
+.newconv{width:100%;height:38px;display:flex;align-items:center;justify-content:center;
+  gap:6px;border:1px dashed var(--line-strong);border-radius:10px;background:transparent;
+  color:var(--ink-2);font-size:var(--fs-small);cursor:pointer;
+  transition:border-color .18s,color .18s,background .18s}
+.newconv:hover{border-color:var(--accent);color:var(--accent-ink);background:var(--accent-faint)}
+.convlist{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.convi{position:relative;display:block;width:100%;padding:9px 26px 9px 10px;
+  border:1px solid transparent;border-radius:9px;background:none;cursor:pointer;text-align:left}
+.convi:hover{background:var(--surface-2);border-color:var(--line-2)}
+.convi.on{background:var(--accent-faint);border-color:var(--accent-soft)}
+.convi .t{display:block;font-size:var(--fs-small);color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.convi.on .t{font-weight:600}
+.convi .m{display:block;margin-top:2px;font-size:10px;color:var(--dim)}
+.convi .x{position:absolute;right:4px;top:50%;transform:translateY(-50%);
+  width:20px;height:20px;border:0;border-radius:5px;background:var(--surface);
+  color:var(--dim);cursor:pointer;opacity:0;line-height:1;font-size:14px}
+.convi:hover .x{opacity:1}
+.convi .x:hover{color:var(--err);background:var(--err-soft)}
+.convempty{padding:14px 8px;font-size:var(--fs-micro);color:var(--dim);line-height:1.8}
+.convfoot{margin-top:8px;padding:8px 4px 0;border-top:1px solid var(--line-2);
+  font-size:10px;color:var(--dim);display:flex;justify-content:space-between;gap:8px}
+.chatlayout .chatwrap{max-width:880px;margin:0 auto;padding:0 24px;width:100%}
+
+/* ---- 登录弹窗 ---- */
+.authmodal{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:20px}
+.am-back{position:absolute;inset:0;background:rgb(var(--ink-rgb) / .38);backdrop-filter:blur(3px)}
+.am-card{position:relative;width:min(420px,100%);background:var(--surface);
+  border:1px solid var(--line);border-radius:18px;padding:26px 26px 22px;
+  box-shadow:var(--shadow-4);animation:amIn .24s var(--ease-out) both}
+@keyframes amIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+.am-x{position:absolute;right:12px;top:8px;border:0;background:none;font-size:22px;
+  line-height:1;color:var(--dim);cursor:pointer}
+.am-x:hover{color:var(--ink)}
+.am-kicker{margin:0 0 8px;font-size:10px;letter-spacing:.18em;color:var(--dim)}
+.am-card h2{margin:0 0 6px;font-size:22px;letter-spacing:-.01em}
+.am-sub{margin:0 0 18px;font-size:var(--fs-small);color:var(--muted);line-height:1.6}
+.am-code{display:grid;grid-template-columns:1fr auto;gap:8px}
+.am-code .inp{letter-spacing:.24em;font-family:ui-monospace,Menlo,monospace}
+.am-code .ghost{height:40px;min-width:104px;white-space:nowrap;font-size:var(--fs-small)}
+.am-msg{min-height:16px;margin:10px 0 4px;font-size:var(--fs-micro);color:var(--err);line-height:1.5}
+.am-msg.ok{color:var(--accent-ink)}
+.am-go{width:100%;height:42px;margin-top:2px}
+.am-tip{margin:12px 0 0;font-size:var(--fs-micro);color:var(--dim);line-height:1.6}
+
+@media (max-width:900px){
+  .chatlayout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
+  .convside{border-right:0;border-bottom:1px solid var(--line);padding:10px 12px 8px}
+  .convtop{padding:0 0 8px}
+  .convlist{flex-direction:row;overflow-x:auto;overflow-y:hidden;gap:6px;padding-bottom:2px}
+  .convi{flex:0 0 auto;max-width:190px;padding:7px 22px 7px 9px}
+  .convi .m{display:none}
+  .convfoot{display:none}
+  .chatlayout .chatwrap{padding:0 16px}
+}
+@media (max-width:520px){
+  .navuser .em{display:none}
+  .am-card{padding:22px 18px 18px}
+}
