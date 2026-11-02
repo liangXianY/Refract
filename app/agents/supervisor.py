@@ -407,6 +407,7 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
     return {
         "tool": "lookup_hot",
         "summary": f"「{title[:20]}」详情（{len(res.items)} 篇）",
+        "hot_title": title,   # 收尾时要说清「用户问的是这条」，别和搜索结果的序号混了
         "query": query,
         "hits": [{"title": r["title"], "url": r["url"]} for r in res.items],
         "material": to_material(res),
@@ -720,7 +721,12 @@ async def handle_chat(
                 brief_lines += [f"- {i['full_name']}（★{i['stars']} {i['language']}）：{(i.get('description') or '')[:60]}" for i in r["items"]]
             elif tool == "lookup_hot":
                 if r.get("material"):
-                    brief_lines.append(f"【热点详情】\n{r['material']}")
+                    # 点明「问的是这条」——否则模型会把用户说的「第2条」当成
+                    # 下面搜索结果里的 [2]，答成另一件事（线上真发生过）
+                    brief_lines.append(
+                        f"【热点详情】用户要了解的热点是「{r.get('hot_title') or ''}」"
+                        f"（下面的 [1][2]... 是搜到的网页编号，不是用户说的第几条）：\n{r['material']}"
+                    )
                 else:
                     brief_lines.append(
                         "【热点详情】没搜到可靠信息——搜索返回的内容和这条标题对不上，"
