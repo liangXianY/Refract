@@ -73,11 +73,24 @@ SHOT_SYSTEM = """你是 Remotion 动效工程师，按配方卡实现一个镜�
 - 确定性：禁 Math.random/Date.now/setTimeout/setInterval；随机一律 rand(seed)（lib 已给）
 - 用 useCurrentFrame + interpolate/spring 驱动一切动画，fps=30，组件高度被卡时长约束
 - 画面必须有真实中文文字：title 必须渲染，lines 可选择性渲染
-- 严格使用给定配色（bg 底、accent 主强调、accent2 次强调），不自创颜色
 - 遵守卡的节奏铁律：关键文字落定后 hold 满，批量入场靠运动不靠逐个发光，
   单点高质量光效可做；"已知坑"里点名的问题绝对不要再犯
 - 组件根部用 <AbsoluteFill style={{background: bg}}> 包裹
 - 代码 30~160 行，写完整，最后一个字符是组件闭合的 }
+
+配色（最容易翻车的一条，逐字照做）：
+- 底色只用 bg，强调色只用 accent / accent2，不自己发明颜色
+- **正文和标题的文字色，一律用参数里给的「正文字色」原值**，不要改成 #fff 或 #000，
+  也不要写 white / black。浅底配白字、深底配黑字是最高频的废件（整片看不见字）
+- accent 只用于装饰（色块/下划线/光晕/进度条），不要拿它当大段文字的颜色
+
+排版（第二条高危，按这个来）：
+- 文字用 flex 纵向流式排列：外层 justifyContent 控制上下位置，内层 flexDirection:'column' + gap 控间距
+- **禁止用多个 position:'absolute' 各自定位文字**——那必然叠字。
+  确需绝对定位的装饰（背景块/网格/光斑），zIndex 压在文字之下，且不得压在文字区域
+- 字号分层：title 是全片最大的（建议 72~104），lines 明显小一档（建议 28~40），两者差 ≥2 倍；
+  标题超过 18 个字就主动缩字号或分成两行，宁可小，不要溢出画面
+- 四周至少留 96px padding，文字块之间用 gap 拉开，任何文字都不贴边
 
 只输出 TSX 代码，不要解释、不要 Markdown 围栏。"""
 
@@ -462,6 +475,71 @@ def _validate_mapping(data: dict, total: float) -> list[Shot]:
     return shots
 
 
+# ---------------------------------------------------------------- 配色工具
+
+def _rgb(color: str) -> tuple[int, int, int]:
+    s = (color or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    try:
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    except (ValueError, IndexError):
+        return (255, 255, 255)
+
+
+def luminance(color: str) -> float:
+    """sRGB 相对亮度（0=纯黑，1=纯白），WCAG 公式。"""
+    def ch(c: int) -> float:
+        v = c / 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = _rgb(color)
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG 对比度（1~21），正文建议 ≥ 4.5，大标题 ≥ 3。"""
+    la, lb = luminance(a), luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def text_color_for(bg: str) -> str:
+    """按底色亮度给出对比度足够的文字色。
+
+    浅底给近黑、深底给近白——不用纯 #000/#fff，稍偏冷调更贴整体视觉。
+    线上踩过：模型拿到浅色 bg 却照抄示例里的 #fff，白字白底整片看不见。
+    """
+    return "#14161a" if luminance(bg) > 0.45 else "#f7f9fb"
+
+
+def _check_contrast(tsx: str, bg: str) -> list[str]:
+    """硬编码文字色和底色撞车——白字白底 / 黑字黑底，字直接消失。
+
+    只查明确的硬编码色值（#hex / white / black）；用 bg/accent 变量的跳过，
+    因为那本来就跟着主题走。阈值取 2.2 而非 4.5：这层只管「看不看得见」，
+    审美层面的对比度不归闸门管，宁可少报也不误杀。
+    """
+    if not bg:
+        return []
+    fails: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r"""color:\s*['"]([^'"]+)['"]""", tsx):
+        c = m.group(1).strip().lower()
+        if c == "white":
+            c = "#ffffff"
+        elif c == "black":
+            c = "#000000"
+        if not c.startswith("#") or c in seen:
+            continue
+        seen.add(c)
+        ratio = contrast_ratio(c, bg)
+        if ratio < 2.2:
+            fails.append(
+                f"文字色 {c} 与底色 {bg} 对比度只有 {ratio:.1f}:1，字看不清"
+            )
+    return fails
+
+
 # ---------------------------------------------------------------- 逐镜头实现
 
 _FALLBACK_TSX_TMPL = r"""import React from 'react';
@@ -474,9 +552,10 @@ export default function Shot@@N@@({ title, accent, accent2, bg }: { title: strin
   const p = easeOutCubic(interpolate(frame, [0, 18], [0, 1], { extrapolateRight: 'clamp' }));
   const breathe = Math.sin(frame / 18) * 0.012;
   return (
-    <AbsoluteFill style={{ background: bg, justifyContent: 'center', alignItems: 'center' }}>
+    <AbsoluteFill style={{ background: bg, justifyContent: 'center', alignItems: 'center', padding: 96 }}>
       <div style={{
-        fontSize: 96, fontWeight: 800, color: '#fff', letterSpacing: 4,
+        fontSize: 92, fontWeight: 800, color: '@@TEXT@@', letterSpacing: 4,
+        maxWidth: 1520, textAlign: 'center', lineHeight: 1.25,
         transform: `scale(${0.86 + 0.14 * p + breathe})`,
         opacity: p, textShadow: `0 4px 40px ${accent}66`,
         fontFamily: '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif',
@@ -497,10 +576,14 @@ async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: Content
     st = get_style(plan.style)
     palette = plan.palette or [st.accent, st.accent2]
     bg = st.bg
+    # 文字色由底色算好直接给死，不让模型自己挑——
+    # 浅底配白字是实测最高频的翻车（整片看不见字）
+    text = text_color_for(bg)
     props_block = (
         f"镜头文字(title): {shot.title}\n"
         f"辅助要点(lines): {'、'.join(shot.lines) or '无'}\n"
         f"配色: bg={bg} accent={palette[0]} accent2={palette[1] if len(palette) > 1 else palette[0]}\n"
+        f"正文字色: {text}（已按底色算好对比度，正文一律用它，不要自己另选）\n"
         f"镜头时长: {shot.duration_s:.1f}s（fps=30，即 {int(shot.duration_s * FPS)} 帧）\n"
         f"叙事任务: {shot.narration}"
     )
@@ -508,20 +591,22 @@ async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: Content
     user = f"【配方卡】\n{card_block}\n\n【本镜头参数】\n{props_block}\n\n【内容简报摘要】\n{_digest(brief)[:500]}"
 
     tsx, _prov = await llm.complete(system=SHOT_SYSTEM, user=user, max_tokens=4000, route="video")
-    failures = check_shot_tsx(tsx, shot)
+    failures = check_shot_tsx(tsx, shot) + _check_contrast(tsx, bg)
     history.append({"shot": shot.idx, "card": shot.card, "attempt": 1,
                     "ok": not failures, "failures": failures, "chars": len(tsx)})
     if failures:
         tsx2, _p2 = await llm.complete(
             system=SHOT_SYSTEM, user=user + "\n\n" + SHOT_REPAIR.format(failures="；".join(failures)),
             max_tokens=4000, route="video")
-        failures2 = check_shot_tsx(tsx2, shot)
+        failures2 = check_shot_tsx(tsx2, shot) + _check_contrast(tsx2, bg)
         history.append({"shot": shot.idx, "card": shot.card, "attempt": 2,
                         "ok": not failures2, "failures": failures2, "chars": len(tsx2)})
         if not failures2:
             shot.tsx, shot.gate_failures = tsx2, []
             return shot
-        shot.tsx = (_FALLBACK_TSX_TMPL.replace("@@N@@", f"{shot.idx:02d}"))
+        shot.tsx = (_FALLBACK_TSX_TMPL
+                    .replace("@@N@@", f"{shot.idx:02d}")
+                    .replace("@@TEXT@@", text))
         shot.used_fallback = True
         shot.gate_failures = failures2
         return shot

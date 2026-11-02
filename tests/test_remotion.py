@@ -170,7 +170,8 @@ def test_mapping_validation_drops_fake_cards():
     shots = rv._validate_mapping(raw, 15.0)
     assert len(shots) >= 3
     assert all(s.card != "不存在的卡" for s in shots)
-    assert all(1.5 <= s.duration_s <= 6.0 for s in shots)
+    # 时长档位是 3~7 秒（早期是 1.5~6，后来为了文字可读性拉长了转场）
+    assert all(3.0 <= s.duration_s <= 7.0 for s in shots)
 
 
 def test_fallback_shots_deterministic():
