@@ -18,6 +18,7 @@ from ..schemas import ContentBrief
 from .brief import plan
 from .compose import compose_stream
 from .reflect import reflect
+from .research import Hotspot
 
 Emitter = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -34,17 +35,21 @@ async def run_pipeline(
     max_rounds: int = 2,
     persona: str = "",
     history_hint: str = "",
+    hot: Hotspot | None = None,
 ) -> dict[str, Any]:
     """编排循环。
 
     persona / history_hint：来自项目记忆与长期记忆。
     传进来就把「人设」约束进 Writer、「历史结构表现」约束进 Reflector——
     这样记忆才真的被用上，而不是只存在库里。
+
+    hot：这条稿子的热点来源（从热榜点进来的那种）。它会一路带到 PLAN，
+    让模型知道「这是百度热搜的第 1 条」而不是一个凭空冒出来的标题。
     """
     started = time.time()
     await emit({"type": "stage", "stage": "plan", "label": "拆解输入，生成内容方案"})
 
-    brief: ContentBrief = await plan(llm, user_input, platform, words)
+    brief: ContentBrief = await plan(llm, user_input, platform, words, hot)
     await emit({"type": "brief", "brief": brief.model_dump()})
 
     body = ""
@@ -103,6 +108,7 @@ async def run_pipeline(
                 user_input + "\n\n上一版方案的问题（必须避免）：\n" + "\n".join(refl.issues),
                 platform,
                 words,
+                hot,
             )
             await emit({"type": "brief", "brief": brief.model_dump()})
         last_total = refl.total

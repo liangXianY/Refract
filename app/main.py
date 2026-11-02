@@ -27,6 +27,7 @@ from .config import registry
 from .llm import LLMClient
 from .pipeline.engine import run_pipeline
 from .pipeline.renderer import save_article
+from .pipeline.research import Hotspot
 from .pipeline.video import save_video, styles_meta
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -111,6 +112,12 @@ class GenerateIn(BaseModel):
     style: str = Field(default="auto", pattern="^(auto|minimal|apple|editorial|tech|sketch|hud|line|pixel|geo)$")
     # 篇幅档位
     words: str = Field(default="medium", pattern="^(short|medium|long)$")
+    # 热点来源（从热榜点进来的那条）。只在点热榜时有，手写的选题没有——
+    # 来源是选题约束，不是备注：百度热搜的读者和小红书的读者要的是两篇稿。
+    hot_source: str = Field(default="", max_length=32)
+    hot_title: str = Field(default="", max_length=200)
+    hot_score: str = Field(default="", max_length=32)
+    hot_rank: int = Field(default=0, ge=0, le=100)
 
 
 class FetchIn(BaseModel):
@@ -569,7 +576,15 @@ async def generate(payload: GenerateIn, request: Request) -> dict[str, str]:
     TASKS[task_id] = task
     quota.consume(user["id"], "article", f"/r/{task_id}", real_ip=client_ip(request))
     asyncio.create_task(
-        _run(task, payload.input, payload.url, payload.platform, payload.words, payload.style)
+        _run(
+            task, payload.input, payload.url, payload.platform, payload.words, payload.style,
+            Hotspot(
+                source=payload.hot_source,
+                title=payload.hot_title,
+                score=payload.hot_score,
+                rank=payload.hot_rank,
+            ),
+        )
     )
     return {"task_id": task_id}
 
@@ -781,6 +796,7 @@ async def _run(
     platform: str,
     words: str,
     style: str,
+    hot: Hotspot | None = None,
 ) -> None:
     task.status = "running"
     try:
@@ -831,9 +847,11 @@ async def _run(
             # 「具体情况如何、什么原因」这类问题尤其危险。
             # 搜到啥就给啥，相关与否让模型判断：代码算词重叠度判不准同义词和缩写，
             # 反而会把对的结果误杀。
-            from .pipeline.search import extract_query
+            from .pipeline.research import build_query
 
-            search_q = extract_query(user_input)
+            # 带平台语境去搜：裸搜标题会被同名无关内容带偏
+            # （「海鸥雨」裸搜能搜出契诃夫《海鸥》话剧），带上平台才搜得到这条本身。
+            search_q = build_query(user_input, hot.source if hot else "")
             if search_q and not settings.mock:
                 await task.push({"type": "stage", "stage": "fetch",
                                  "label": f"检索「{search_q[:18]}」的相关报道"})
@@ -867,6 +885,7 @@ async def _run(
             # 记忆注入：人设卡管住风格，历史结构给 Reflector 参照
             persona=memory.style_profile(),
             history_hint=memory.reflect_hint(),
+            hot=hot,   # 热点来源一路带到 PLAN，模型才知道这条来自百度热搜
         )
         from .schemas import ContentBrief
 

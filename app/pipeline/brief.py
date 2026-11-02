@@ -10,6 +10,7 @@ from __future__ import annotations
 from .. import mock
 from ..llm import LLMClient
 from ..schemas import ContentBrief
+from .research import Hotspot, context_block
 
 SYSTEM = """你是资深内容策划。任务：把用户的任意输入，转成一份结构化的选题方案。
 
@@ -20,6 +21,9 @@ SYSTEM = """你是资深内容策划。任务：把用户的任意输入，转�
    绝对不要为了凑数编造数据——source 为 null 会在前端被标黄，这是刻意设计的暴露。
 4. hook 必须是能让人停下来的第一句，不要写"随着 AI 的发展"这类套话。
 5. word_limit 和 platform 由系统给定，原样回填，不要自己发挥。
+6. 给了「热点来源」时，angle 和 tone 必须贴那个平台的调性——同一条热点，
+   在百度热搜（新闻时事）和小红书（个人视角）该是两篇稿；这条是榜上有热度的话题，
+   不要写成跟热度来源无关的个人随笔。
 
 输出 JSON 结构：
 {
@@ -36,12 +40,17 @@ SYSTEM = """你是资深内容策划。任务：把用户的任意输入，转�
 }"""
 
 
-def _user_prompt(user_input: str, platform: str, word_limit: int, tone: str) -> str:
+def _user_prompt(user_input: str, platform: str, word_limit: int, tone: str,
+                 hot: Hotspot | None = None) -> str:
+    # 热点来源（百度热搜 / 小红书…）和热度值必须与选题一起给到模型：
+    # 只给标题的话，模型既不知道这条来自哪、也不知道该用什么调性写。
+    hot_ctx = context_block(hot)
     return (
         f"目标平台：{platform}\n"
         f"目标篇幅：{word_limit} 字（反映到 word_limit 字段）\n"
         f"期望语气：{tone}\n"
-        f"用户输入：\n<<<\n{user_input[:4000]}\n>>>\n\n"
+        + (f"\n{hot_ctx}\n" if hot_ctx else "")
+        + f"\n用户输入：\n<<<\n{user_input[:4000]}\n>>>\n\n"
         f"请生成选题方案 JSON。outline 给 4-6 节，每节 2-3 个论点。"
     )
 
@@ -73,6 +82,7 @@ async def plan(
     user_input: str,
     platform: str = "wechat",
     words: str = "medium",
+    hot: Hotspot | None = None,
 ) -> ContentBrief:
     word_limit = resolve_word_limit(platform, words)
     tone = PLATFORM_TONE.get(platform, PLATFORM_TONE["wechat"])
@@ -85,7 +95,7 @@ async def plan(
 
     raw = await llm.structured(
         system=SYSTEM,
-        user=_user_prompt(user_input, platform, word_limit, tone),
+        user=_user_prompt(user_input, platform, word_limit, tone, hot),
         max_tokens=6000,  # 推理模型的思考 token 共用额度
         validate=_validate,
     )

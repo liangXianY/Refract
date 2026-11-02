@@ -1017,6 +1017,8 @@ function setStages(name) {
 async function genArticle() {
   const text = $('artInput').value.trim();
   if (text.length < 2 || artBusy) return;
+  // 只在输入框还写着那条热点时才带上来源：用户改了主题就别再硬贴「来自百度热搜」
+  const hot = (hotPick && text.includes(hotPick.title)) ? hotPick : null;
   artBusy = true;
   $('artGo').disabled = true;
   $('artGo').textContent = '生成中…';
@@ -1042,7 +1044,13 @@ async function genArticle() {
 
   try {
     const done = await runTask(
-      { input: text, platform: artPlatform, style: 'auto', words: artWords },
+      {
+        input: text, platform: artPlatform, style: 'auto', words: artWords,
+        hot_source: hot ? hot.source : '',
+        hot_title: hot ? hot.title : '',
+        hot_score: hot ? hot.score : '',
+        hot_rank: hot ? hot.rank : 0,
+      },
       (ev) => {
         if (ev.type === 'stage') { setStages(ev.stage); $('artThinkText').textContent = ev.label || ''; }
         if (ev.type === 'brief') renderBrief(ev.brief);
@@ -1173,10 +1181,14 @@ $('ghLoad').onclick = async () => {
    60s API，免费聚合接口。和 GitHub 一样点了才请求，不自动打。
    选中某条 → 填进输入框 → 点「生成文章」即成稿。 */
 let hotSource = 'rednote';
+// 当前选中的那条热点。除了标题，还得记住来源平台和热度——
+// 只给标题的话，模型不知道这是百度热搜（新闻时事）还是小红书（个人视角），
+// 同一个标题该写成两篇不同的稿。
+let hotPick = null;
 
 function renderHot(items) {
   $('hotList').innerHTML = items.map(i => `
-    <button class="titem" data-obj="${esc(i.title)}">
+    <button class="titem" data-obj="${esc(i.title)}" data-score="${esc(i.score || '')}" data-rank="${i.rank || 0}">
       <b>${esc(i.title)}</b>
       <span>${esc(i.score || '热度 ' + (i.rank || ''))}</span>
     </button>`).join('');
@@ -1188,6 +1200,12 @@ function renderHot(items) {
       // 之前这里写死了「平台小红书风格」，导致选公众号/口播稿也一律按小红书写。
       $('artInput').value = `结合「${b.dataset.obj}」这个热点写一篇`;
       autosize($('artInput'));
+      hotPick = {
+        source: hotSource,
+        title: b.dataset.obj,
+        score: b.dataset.score || '',
+        rank: parseInt(b.dataset.rank, 10) || 0,
+      };
       $('artHint').textContent = '已选中热点，点「生成文章」';
     };
   });
@@ -1195,6 +1213,7 @@ function renderHot(items) {
 
 async function loadHot(source) {
   hotSource = source;
+  hotPick = null;   // 换平台了，之前选的那条不属于新榜单
   document.querySelectorAll('.hot-tab').forEach(t => t.classList.toggle('on', t.dataset.s === source));
   $('hotList').innerHTML = '<p class="ph">拉取中…</p>';
   try {

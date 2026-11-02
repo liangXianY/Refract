@@ -148,6 +148,10 @@ PLANNER_SYSTEM = """你是 Refract 的主 Agent，把用户消息变成执行计
   先从榜单里挑定那条 → lookup_hot 读正文；用户给了链接 → fetch_url 读网页；
   通用选题 → web_search 搜一轮。拿到素材再 write_article，别只拿标题就动笔。
 - write_article 的 input 要把主题 + 素材要点一起写清楚，不能只写四个字。
+- **热点稿的 input 必须写清来源平台和热度**，例如：
+  「结合百度热搜第 1 条「A股再现涨近日」（热度 761.57w）写一篇公众号长文」。
+  系统会自动补一段来源说明兜底，但你写清楚更稳——同一条热点在百度（新闻时事）
+  和小红书（个人视角）是两篇不同的稿，来源决定角度和语气。
 
 【没有工具能做到的，明说做不到】
 - 如果用户要的东西，上面的工具一个都做不了（比如"帮我打电话""帮我订机票""控制我的手机"），
@@ -377,12 +381,15 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
     source = str(args.get("source") or "").strip()
     rank = args.get("rank", args.get("index"))
 
+    score = ""
     if not title and rank is not None:
         # rank 从 1 数起：用户说的「第二条」就是 items[1]
         prev = next((r for r in results if r.get("tool") == "hot_topics" and r.get("items")), None)
         if prev:
             try:
-                title = prev["items"][int(rank) - 1]["title"]
+                item = prev["items"][int(rank) - 1]
+                title = item["title"]
+                score = str(item.get("score") or "")
                 source = source or prev.get("source", "")
             except (IndexError, KeyError, TypeError, ValueError):
                 title = ""
@@ -391,10 +398,10 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
 
     # 裸搜标题容易被无关内容带偏（「海鸥雨」裸搜会搜出契诃夫《海鸥》话剧），
     # 带上平台语境，让搜索引擎知道这是「某平台的某条热点」。
-    source_hint = {"rednote": "小红书", "weibo": "微博", "zhihu": "知乎",
-                   "douyin": "抖音", "bilibili": "B站", "baidu": "百度",
-                   "tieba": "百度贴吧"}.get(source, "")
-    query = f"{title} {source_hint}".strip() if source_hint else title
+    # 语境词和另外两条写作入口共用一份，别在这里另写一张表。
+    from ..pipeline.research import build_query
+
+    query = build_query(f"「{title}」", source)
     try:
         res = await search(query, max_results=6)
     except SearchError as exc:
@@ -414,6 +421,10 @@ async def _run_lookup_hot(args: dict, llm, keeper, task_id, emit, results) -> di
         "tool": "lookup_hot",
         "summary": f"「{title[:20]}」详情（{len(res.items)} 篇）",
         "hot_title": title,   # 收尾时要说清「用户问的是这条」，别和搜索结果的序号混了
+        # 来源和热度一并返回：后面 write_article 要靠它把「这条来自哪、有多热」
+        # 一起交给写作，不然模型只知道一个标题
+        "source": source,
+        "score": score,
         "query": query,
         "hits": [{"title": r["title"], "url": r["url"]} for r in res.items],
         "material": to_material(res),
@@ -427,18 +438,58 @@ def brief_img_hint(args: dict, body: str) -> str:
     return (str(args.get("input") or "")[:20] or body[:20]).replace("\n", " ")
 
 
+def _infer_hotspot(input_text: str, results: list[dict]) -> Hotspot:
+    """从本轮已跑过的工具结果里，还原「这条热点来自哪个平台、热度多少」。
+
+    为什么要推断而不是指望模型：write_article 的 input 是模型自己写的，
+    实测它经常只写标题（「结合 A股再现涨近日 写一篇」），平台来源就被丢掉了。
+    而 hot_topics / lookup_hot 的结果就在眼前，代码还原比模型自觉可靠。
+    """
+    from ..pipeline.research import Hotspot
+
+    # 1. 优先看 lookup_hot：它就是「某条热点的详情」，source/title 最直接
+    for r in reversed(results):
+        if r.get("tool") == "lookup_hot" and r.get("source"):
+            return Hotspot(
+                source=str(r.get("source") or ""),
+                title=str(r.get("hot_title") or ""),
+                score=str(r.get("score") or ""),
+            )
+
+    # 2. 否则看榜单：在 items 里找那条标题出现在写作要求里的
+    for r in reversed(results):
+        if r.get("tool") != "hot_topics" or not r.get("items"):
+            continue
+        for i, item in enumerate(r["items"], 1):
+            t = str(item.get("title") or "")
+            if t and t in input_text:
+                return Hotspot(
+                    source=str(r.get("source") or ""),
+                    title=t,
+                    score=str(item.get("score") or ""),
+                    rank=i,
+                )
+    return Hotspot()
+
+
 async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) -> dict:
     from ..pipeline.engine import run_pipeline
-    from ..pipeline.search import extract_query, search, to_material
+    from ..pipeline.research import build_query, context_block
+    from ..pipeline.search import search, to_material
 
     input_text = str(args.get("input") or "")
+    # 热点来源：模型写的 input 里经常只有标题，这里从本轮结果里还原出来，
+    # 等素材拼完再补进 input（先补会把来源说明也当成检索词的一部分）。
+    hot = _infer_hotspot(input_text, results)
+
     # 前序工具的素材自动注入：搜索结果 / 链接正文，都带来源
     extras = [r["material"] for r in results if r.get("material")]
     if not extras and not llm.cfg.mock:
         # 用户直接说「写一篇关于 XX」时没有前序素材，得自己搜一次。
         # 搜到的东西一律给模型，相关与否让模型自己判断——代码算相似度
         # 判不准（同义词、缩写、跨语言都算不准），模型看标题和来源更靠谱。
-        q = extract_query(input_text)
+        # 检索词带平台语境：裸搜标题会被同名无关内容带偏。
+        q = build_query(input_text, hot.source)
         if q:
             try:
                 await emit({"type": "stage", "stage": "fetch",
@@ -459,6 +510,9 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
             + "\n\n【检索素材（含来源链接，引用时必须标注）】\n"
             + "\n\n".join(extras)
         )
+    if hot:
+        # 来源放在素材之后：这两段都是「事实」，写作指令本身在最前面
+        input_text = f"{input_text}\n\n{context_block(hot)}"
 
     result = await run_pipeline(
         task_id=task_id,
@@ -470,6 +524,7 @@ async def _run_write_article(args: dict, llm, keeper, task_id, emit, results) ->
         emit=emit,  # stage/delta/reflection 直接透传，前端渲染成卡片
         persona=keeper.persona_profile(),
         history_hint=keeper.reflect_hint(),
+        hot=hot,
     )
 
     # 配图和文章板块走同一套（images.fill_placeholders）：

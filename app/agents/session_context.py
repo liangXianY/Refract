@@ -284,7 +284,8 @@ class SessionMemory:
                 flines.append(f"    {it.get('rank')}. {it.get('title','')}{score}")
             flines.append(
                 f"    要读某条详情：lookup_hot(source={hot.get('source') or ''}, rank=N)；"
-                "要拿某条写稿：把它的标题原样放进 write_article 的 input。"
+                "要拿某条写稿：把它的标题原样放进 write_article 的 input，"
+                f"并写明它来自「{label}」和上面的热度。"
             )
         for sr in facts.get("searches") or []:
             hits = "；".join(f"《{i['title'][:28]}》" for i in sr.get("items") or [])
