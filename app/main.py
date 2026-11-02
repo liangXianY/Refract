@@ -629,6 +629,22 @@ async def _run(
             f"{result['word_count']} 字 · {dur} · "
             f"{'mock 数据' if result['mocked'] else '真实生成'}"
         )
+        # 配图：把 compose 规划好的 prompt 变成真图。
+        # 没配 IMAGE_API_KEY 就整段跳过，正文保持「🖼 配图位」占位（原行为）。
+        from .pipeline import images as images_mod
+
+        if images_mod.enabled():
+            await task.push({"type": "stage", "stage": "images", "label": "按提示词生成配图"})
+            filled, n_ok = await images_mod.fill_placeholders(
+                result["body"], settings.data_dir / "images" / task.id
+            )
+            if n_ok:
+                result["body"] = filled
+                await task.push({"type": "note", "text": f"已生成 {n_ok} 张配图"})
+            else:
+                await task.push({"type": "note",
+                                 "text": "配图生成失败，保留占位（不影响正文）"})
+
         save_article(brief, result["body"], task.id, settings.data_dir, meta)
 
         # 数据回流：把「结构 + 这次得分」写进长期记忆，下次 Reflector 有参照
@@ -1182,3 +1198,7 @@ async def admin_unlimited(request: Request, body: dict[str, Any]) -> dict[str, A
 
 
 app.mount("/web", StaticFiles(directory=WEB_DIR), name="web")
+
+# 文章配图：AI 生成后就存在本地（图床临时 URL 一小时就失效），由这里对外提供
+(settings.data_dir / "images").mkdir(parents=True, exist_ok=True)
+app.mount("/img", StaticFiles(directory=settings.data_dir / "images"), name="img")
