@@ -179,6 +179,10 @@ body[data-view="workbench"] .navlinks a[data-anchor]{display:none}
   color:var(--muted);border:1px solid var(--line);border-radius:var(--r-full);
   padding:5px 11px;background:var(--surface);
 }
+/* 工作台顶栏太挤：三板块胶囊是绝对居中的，右侧再排「GitHub + 模型状态 + 账号」
+   就会撞上去（截图里模型标签被盖掉一半）。工作台里模型状态没信息量，让位给账号。 */
+body[data-view="workbench"] .stat{display:none}
+body[data-view="workbench"] .navright{gap:14px}
 .dot{width:5px;height:5px;border-radius:50%;background:var(--dim);transition:background var(--dur-3)}
 .dot.live{background:var(--ok);box-shadow:0 0 0 4px var(--accent-soft)}
 .dot.mock{background:var(--warn);box-shadow:0 0 0 4px var(--amber-soft)}
@@ -991,7 +995,10 @@ textarea::placeholder{color:var(--dim)}
   .modes{position:static;transform:none}
   .modes button{padding:6px 12px}
   body[data-view="landing"] .modes{display:none}
-  body[data-view="workbench"] .navright{display:none}
+  /* 移动端工作台也要能退出登录：留着账号，砍掉 GitHub 和模型状态 */
+  body[data-view="workbench"] .navright{display:flex;gap:8px}
+  body[data-view="workbench"] .navlinks,
+  body[data-view="workbench"] .stat{display:none}
   body[data-view="landing"] .stat{display:none}
 
   /* 视差/漂移全关（降级矩阵 §3.1） */
