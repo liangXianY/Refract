@@ -124,16 +124,13 @@ async function logout() {
 const AM = {
   mode: 'pw',
   conf: {
-    pw:    { title: '登录', sub: '邮箱 + 密码，不发验证码。',
-             tip: '登录后对话存在账号下：换设备、换网络都能接着聊，长期偏好也跟着你。',
+    pw:    { title: '登录',
              email: 1, go: '登录', code: 0, pw: 1, pw2: 0, tabs: 1,
              alt: ['reset', '忘记密码？'], newpw: false },
-    reg:   { title: '注册', sub: '邮箱收验证码，同时把密码设好——以后只用密码登录。',
-             tip: '注册后，对话记录和长期偏好都挂在这个账号下，换设备也在。',
+    reg:   { title: '注册',
              email: 1, go: '注册并登录', code: 1, pw: 1, pw2: 1, tabs: 1,
              alt: ['pw', '已有账号？去登录'], newpw: true },
-    reset: { title: '找回密码', sub: '邮箱收验证码，直接设一个新密码。',
-             tip: '以前用验证码登录、还没设过密码的老账号，也是走这里补一个。',
+    reset: { title: '找回密码',
              email: 1, go: '重设密码并登录', code: 1, pw: 1, pw2: 1, tabs: 0,
              alt: ['pw', '← 返回登录'], newpw: true },
   },
@@ -144,8 +141,6 @@ function setAmMode(mode) {
   if (!c) return;
   AM.mode = mode;
   $('amTitle').textContent = c.title;
-  $('amSub').textContent = c.sub;
-  $('amTip').textContent = c.tip;
   $('amGo').textContent = c.go;
   $('amEmailRow').hidden = !c.email;
   $('amCodeRow').hidden = !c.code;

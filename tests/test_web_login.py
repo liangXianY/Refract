@@ -70,6 +70,23 @@ def test_login_is_password_only() -> None:
     assert "amOld" not in html and "amOldRow" not in js, "「原密码」那一行该随设密码模式一起删掉"
 
 
+def test_no_explanatory_fine_print() -> None:
+    """弹窗里不要解释性小字：副标题、底部提示、kicker 都删掉了。
+
+    用户的要求很直白——「这些小字不需要」。字段名（邮箱/密码/验证码）已经说明
+    一切，再补一句「邮箱 + 密码，不发验证码」只是噪音。留着这条断言，防止以后
+    又顺手加回来一段说明文字。
+    """
+    html = read(HTML)
+    js = read(JS)
+    for cls in ("am-kicker", "am-sub", "am-tip"):
+        assert cls not in html, f"弹窗里又出现了 .{cls} 小字"
+        assert cls not in js, f"app.js 又引用了 .{cls} 小字"
+    for eid in ("amSub", "amTip"):
+        assert eid not in html, f"弹窗里又出现了 #{eid} 小字"
+        assert eid not in js, f"app.js 又引用了 #{eid}"
+
+
 def test_auth_endpoints_match_backend() -> None:
     """前端调的每个 /api/auth/* 后端都得真有——改名了会静默 404。"""
     from app.main import app
@@ -107,6 +124,7 @@ if __name__ == "__main__":
     test_tabs_have_config()
     test_am_elements_exist()
     test_login_is_password_only()
+    test_no_explanatory_fine_print()
     test_auth_endpoints_match_backend()
     test_admin_uses_real_endpoints()
-    print("ALL PASS 前端契约：登录只有密码 / 注册与找回密码发码 / 接口都对得上")
+    print("ALL PASS 前端契约：登录只有密码 / 注册与找回密码发码 / 无说明小字 / 接口都对得上")

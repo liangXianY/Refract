@@ -1176,9 +1176,7 @@ body[data-view="landing"] #modes{display:none}
 .am-x{position:absolute;right:12px;top:8px;border:0;background:none;font-size:22px;
   line-height:1;color:var(--dim);cursor:pointer}
 .am-x:hover{color:var(--ink)}
-.am-kicker{margin:0 0 8px;font-size:10px;letter-spacing:.18em;color:var(--dim)}
-.am-card h2{margin:0 0 6px;font-size:22px;letter-spacing:-.01em}
-.am-sub{margin:0 0 18px;font-size:var(--fs-small);color:var(--muted);line-height:1.6}
+.am-card h2{margin:0 0 16px;font-size:22px;letter-spacing:-.01em}
 .am-tabs{display:flex;gap:2px;background:var(--bg-2);padding:3px;border-radius:var(--r-full);
   margin:0 0 16px}
 .am-tabs button{flex:1;position:relative;padding:7px 10px;border:0;border-radius:var(--r-full);
@@ -1197,7 +1195,6 @@ body[data-view="landing"] #modes{display:none}
 .am-msg{min-height:16px;margin:10px 0 4px;font-size:var(--fs-micro);color:var(--err);line-height:1.5}
 .am-msg.ok{color:var(--accent-ink)}
 .am-go{width:100%;height:42px;margin-top:2px}
-.am-tip{margin:12px 0 0;font-size:var(--fs-micro);color:var(--dim);line-height:1.6}
 
 @media (max-width:900px){
   .chatlayout{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}
