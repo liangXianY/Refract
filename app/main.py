@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -489,12 +490,14 @@ async def platform_hot(source: str, limit: int = 10) -> dict[str, Any]:
 
 
 @app.get("/api/articles/{task_id}/md")
-async def article_markdown(task_id: str) -> Any:
+async def article_markdown(task_id: str, request: Request) -> Any:
     """文章的 Markdown 原文，带下载头。产物页是给眼睛看的，发平台要的是 md。
 
-    两个下载头的坑（都踩过）：
+    三个坑（都踩过）：
     - text/markdown 会被浏览器当文本预览甚至改名 .txt → 用 octet-stream 强制下载
     - 中文文件名直接放 filename= 会乱码/被丢弃 → ASCII 兜底 + RFC 5987 filename*
+    - 配图在正文里是站内相对路径（/img/xxx/1.png），下载到本地就成了裂图 ——
+      这里换成绝对 URL，md 拿到哪台机器上打开都能显示
     """
     from .pipeline import runs
     from urllib.parse import quote
@@ -506,6 +509,13 @@ async def article_markdown(task_id: str) -> Any:
     if not body:
         raise HTTPException(404, "这条记录没有正文（可能是旧任务）")
     from fastapi import Response
+
+    # 反代场景下 scheme/host 以转发头为准，不然会写成 127.0.0.1
+    scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host")
+            or request.url.netloc)
+    origin = f"{scheme}://{host}".rstrip("/")
+    body = re.sub(r"(!\[[^\]]*\]\()/img/", lambda m: f"{m.group(1)}{origin}/img/", body)
 
     name = (r.get("brief") or {}).get("topic") or task_id
     safe_ascii = "".join(c for c in name if c.isascii() and (c.isalnum() or c in "._-"))[:40] or task_id

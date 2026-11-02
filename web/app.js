@@ -341,13 +341,22 @@ function renderMd(text, withCursor) {
       continue;
     }
     // 图片：真图直接渲染，配图占位渲染成占位卡
-    const mImg = line.trim().match(/^!\[([^\]]*)\]\((https?:[^)]+)\)\s*$/);
+    // 站内绝对路径 /img/... 也算真图——配图落地就存在这儿，只认 https?:// 的话
+    // 整行会当成普通段落，正文里冒出一串 "![...](/img/...)" 字面文字。
+    const mImg = line.trim().match(/^!\[([^\]]*)\]\(((?:https?:\/\/|\/\/|\/)[^)]+)\)\s*$/);
     if (mImg) {
       if (inList) { out.push('</ul>'); inList = false; } flushTable();
       const cap = (mImg[1] || '').trim();
       const capHtml = cap && !/这里放|什么图|配图位|图片/.test(cap)
         ? `<figcaption>${esc(cap)}</figcaption>` : '';
       out.push(`<figure class="mdimg"><img src="${esc(mImg[2])}" alt="${esc(cap)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('figure').style.display='none'">${capHtml}</figure>`);
+      continue;
+    }
+    // 配图占位（图没生成出来时的降级）：渲染成虚线卡，别把 prompt 原文糊在正文里
+    const mSlot = line.trim().match(/^!\[([^\]]*)\]\(prompt:\s*([^)]*)\)\s*$/);
+    if (mSlot) {
+      if (inList) { out.push('</ul>'); inList = false; } flushTable();
+      out.push(`<figure class="mdslot"><figcaption>🖼 配图位：${esc(mSlot[1] || '配图')}</figcaption><p>${esc(mSlot[2] || '')}</p></figure>`);
       continue;
     }
     if (line.startsWith('### ')) { if (inList) { out.push('</ul>'); inList = false; } out.push(`<h4>${inlineMd(line.slice(4))}</h4>`); }

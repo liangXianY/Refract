@@ -92,9 +92,14 @@ def md_to_html(md: str) -> str:
                 flush_table()
                 continue
 
-        # 真图片：![说明](https://...) —— 联网搜到的图。no-referrer 防盗链绕过，
-        # 加载失败整块隐藏（搜到的图可能有失效/防盗链，别让裂图毁掉版面）
-        m_real = re.match(r"^!\[([^\]]*)\]\((https?://[^)]+)\)\s*$", line.strip())
+        # 真图片：![说明](https://...) 或站内图 ![说明](/img/xxx/1.png)。
+        # no-referrer 防盗链绕过，加载失败整块隐藏（搜到的图可能失效或有防盗链，
+        # 别让裂图毁掉版面）。
+        # 站内路径这条以前漏了：配图落地是 /img/{task_id}/{n}.png，只认 https?://
+        # 的话整行会被当普通段落输出，正文里就出现一串 "![...](/img/...)" 字样。
+        m_real = re.match(
+            r"^!\[([^\]]*)\]\(((?:https?://|//|/)[^)]+)\)\s*$", line.strip()
+        )
         if m_real:
             close_list()
             flush_table()

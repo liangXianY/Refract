@@ -981,6 +981,11 @@ textarea::placeholder{color:var(--dim)}
 .md figure.mdimg{margin:14px 0}
 .md figure.mdimg img{max-width:100%;border-radius:var(--r-s);border:1px solid var(--line);display:block}
 .md figure.mdimg figcaption{font-size:10px;color:var(--dim);margin-top:5px;text-align:center}
+/* 图没生成出来时的降级卡：虚线框 + 提示词，跟产物页同一套观感 */
+.md figure.mdslot{margin:14px 0;padding:12px 14px;border:1px dashed var(--line);
+  border-radius:var(--r-s);background:var(--bg-2)}
+.md figure.mdslot figcaption{font-size:var(--fs-micro);font-weight:600;color:var(--accent-ink)}
+.md figure.mdslot p{margin:5px 0 0;font-size:10px;color:var(--dim);line-height:1.6}
 
 /* ============================ 响应式 ============================ */
 @media (max-width:1080px){
