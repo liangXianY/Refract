@@ -636,7 +636,8 @@ async def _run(
         if images_mod.enabled():
             await task.push({"type": "stage", "stage": "images", "label": "按提示词生成配图"})
             filled, n_ok = await images_mod.fill_placeholders(
-                result["body"], settings.data_dir / "images" / task.id
+                result["body"], settings.data_dir / "images" / task.id,
+                topic=brief.topic,   # 正文没插占位时，用它当搜索词补图
             )
             if n_ok:
                 result["body"] = filled

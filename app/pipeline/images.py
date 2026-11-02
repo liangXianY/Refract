@@ -171,29 +171,29 @@ async def _pick(desc: str, prompt: str) -> bytes | None:
 
 
 async def fill_placeholders(
-    body: str, out_dir: Path, url_prefix: str = "/img"
+    body: str, out_dir: Path, url_prefix: str = "/img", *,
+    top_up: bool = True, topic: str = "", max_total: int = 3,
 ) -> tuple[str, int]:
-    """把正文里的 `![说明](prompt: xxx)` 替换成真图。
+    """把正文里的 `![说明](prompt: xxx)` 替换成真图；图不够时主动补。
 
-    返回 (新正文, 成功张数)。未配置 key 或全部失败时原样返回，正文不受影响。
+    返回 (新正文, 成功张数)。未配置任何图源或全部失败时原样返回。
+
+    top_up=True 时，如果最终图数仍少于 max_total，会再搜一次图插到中后段小节后——
+    文章板块和对话板块都踩过同一个坑：模型不是每次都按引导插占位，
+    结果正文一个图都没有。不能指望模型记得，得由代码兜。
     """
     if not enabled() or not body:
         return body, 0
 
-    total = len(_PLACEHOLDER.findall(body))
-    if not total:
-        return body, 0
-
+    total_slots = len(_PLACEHOLDER.findall(body))
     hits = list(_PLACEHOLDER.finditer(body))[:MAX_IMAGES]
-    if not hits:
-        return body, 0
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # group(1) 是图的说明（短，像新闻标题）→ 拿去搜真实图；
     # group(2) 是生图 prompt（长，描述画面）→ 拿去 AI 生成。
     results = await asyncio.gather(
         *(_pick(m.group(1).strip(), m.group(2).strip()) for m in hits)
-    )
+    ) if hits else []
 
     it = iter(results)
     seq = {"n": 0}
@@ -207,5 +207,65 @@ async def fill_placeholders(
         (out_dir / name).write_bytes(data)
         return f"![{m.group(1)}]({url_prefix}/{out_dir.name}/{name})"
 
-    new_body = _PLACEHOLDER.sub(repl, body, count=MAX_IMAGES)
+    new_body = _PLACEHOLDER.sub(repl, body, count=MAX_IMAGES) if total_slots else body
+
+    # 补图：正文图不足 max_total 时，再取几张塞进中后段小节
+    if top_up and seq["n"] < max_total and "## " in new_body:
+        need = max_total - new_body.count("![")
+        if need > 0:
+            q = (topic or _first_alt(body) or "").strip()
+            extra = await _search_pool(q, need)
+            if extra:
+                new_body = _insert_after_sections(
+                    new_body, extra, out_dir, url_prefix, seq, max_total, topic=q
+                )
+
     return new_body, seq["n"]
+
+
+def _first_alt(body: str) -> str:
+    """正文里第一个图注，用来当补图的搜索词（没有就用空串）。"""
+    m = re.search(r"!\[([^\]]+)\]", body)
+    return (m.group(1) if m else "").strip()[:60]
+
+
+async def _search_pool(query: str, need: int) -> list[bytes]:
+    """搜一批真实图备用（补图用）。搜不到就返回空，不抛异常。"""
+    q = (query or "").strip()
+    if not q or _source() not in ("auto", "tavily"):
+        return []
+    from .search import SearchError, search
+
+    try:
+        res = await search(q, max_results=6, with_images=True)
+    except SearchError:
+        return []
+    out: list[bytes] = []
+    for img in res.images:
+        if len(out) >= need:
+            break
+        data = await _download_image(str(img.get("url") or ""))
+        if data:
+            out.append(data)
+    return out
+
+
+def _insert_after_sections(
+    body: str, blobs: list[bytes], out_dir: Path, url_prefix: str,
+    seq: dict, max_total: int, topic: str = "",
+) -> str:
+    """把图片插到中后段小节标题之后，最多凑到 max_total 张。"""
+    alt = (topic or "配图")[:40]
+    for i, data in enumerate(blobs):
+        if body.count("![") >= max_total:
+            break
+        heads = list(re.finditer(r"^## .+$", body, re.M))
+        if not heads:
+            break
+        # 从第 2 个小节往后逐个插，避免几张图都挤在同一处
+        at = heads[min(len(heads) - 1, 1 + i)].end()
+        seq["n"] += 1
+        name = f"{seq['n']}.png"
+        (out_dir / name).write_bytes(data)
+        body = body[:at] + f"\n\n![{alt}]({url_prefix}/{out_dir.name}/{name})\n" + body[at:]
+    return body
