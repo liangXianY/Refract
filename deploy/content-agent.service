@@ -10,7 +10,10 @@ WorkingDirectory=/home/ubuntu/app/content-agent
 # API Key 走 EnvironmentFile，权限 600，不进仓库
 EnvironmentFile=-/home/ubuntu/app/content-agent/.env
 Environment=DATA_DIR=/home/ubuntu/app/content-agent/data
-Environment=MAX_ROUNDS=3
+# 注意：MAX_ROUNDS 不在这里配。
+# 下面这行 EnvironmentFile 加载的 .env 优先级高于 Environment=，
+# 写在这里会被 .env 覆盖，只会造成「改了 service 却没反应」的困惑（踩过）。
+# 轮数上限统一在 .env 里改。
 Environment=PYTHONUNBUFFERED=1
 # 注意：不要在下面再写 Environment=LLM_MOCK=...
 # systemd 里 Environment= 的优先级高于 EnvironmentFile=，
