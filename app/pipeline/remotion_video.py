@@ -1027,7 +1027,7 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
                              "fallbacks": sum(1 for s in shots if s.used_fallback),
                              "duration_s": round(frame_cursor, 2)})
     await _decide(emit, "gate", "工程闸门：" + ("全部通过" if gate.ok else "有问题"),
-                  (gate.failures or [f"镜头 {len(shots)} 个 · 音效 {sfx_files} 个 · "
+                  (gate.failures or [f"镜头 {len(shots)} 个 · 音效 {len(sfx_files)} 个 · "
                                      f"总长 {frame_cursor:.1f}s"]),
                   status="ok" if gate.ok else "warn")
 
