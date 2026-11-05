@@ -987,8 +987,11 @@ async def events(task_id: str, request: Request) -> StreamingResponse:
     if task is None:
         raise HTTPException(404, "task not found")
 
-    # 浏览器重连会带 Last-Event-ID：从那条之后续传，事件不重不漏
+    # 浏览器重连会带 Last-Event-ID；前端断流自愈走 ?after=（EventSource 换新对象
+    # 带不上旧 header）。两处取先到的，从那条之后续传，事件不重不漏
     last_id = request.headers.get("last-event-id")
+    if not (last_id or "").isdigit():
+        last_id = request.query_params.get("after")
     skip_until = int(last_id) if (last_id or "").isdigit() else -1
 
     async def gen():

@@ -390,35 +390,61 @@ async function runTask(payload, onEvent, path = '/api/generate', timeoutMs = 900
   if (d.conversation_id) setCurrentConv(d.conversation_id);
 
   return new Promise((resolve, reject) => {
-    const es = new EventSource(`/api/tasks/${task_id}/events`);
-    // 看门狗：timeoutMs 内没有任何事件就判卡死。默认 90s；
-    // 视频成片要等 Opus 写 3-5 分钟代码，调用方得显式放宽
+    // 断流自愈：长任务（成片要几分钟）里 Wi-Fi 抖一下，TCP 连接可能黑洞挂死
+    // （不发 RST 也不来数据），服务端 20s 一次的心跳收不到，看门狗就误判
+    // 「卡死」——但服务端任务其实还在跑，让用户重试等于重烧一遍 token。
+    // 服务端支持按 seq 续传（?after=），所以断线先静默重连续传，
+    // 连续几次都立不起来才真的报错。
     let lastBeat = Date.now();
     let aborted = false;
+    let lastSeq = -1;   // 收过的最大 seq，重连时从这里之后续传
+    let attempts = 0;   // 连续失败次数；收到任何消息就清零，只防「连续」断
+    let es = null;
+    // 看门狗：timeoutMs 内没有任何事件就尝试重连。默认 90s；
+    // 视频成片要等 Opus 写 3-5 分钟代码，调用方得显式放宽
     const watchdog = setInterval(() => {
-      if (Date.now() - lastBeat > timeoutMs) {
-        clearInterval(watchdog);
-        es.close();
-        reject(new Error('任务超时没有响应，已断开（可重试）'));
-      }
+      if (Date.now() - lastBeat > timeoutMs) reconnect('任务长时间没有响应');
     }, 5000);
-    const finish = (fn, arg) => { clearInterval(watchdog); es.close(); fn(arg); };
-    es.onmessage = (m) => {
-      lastBeat = Date.now();
-      let ev;
-      try { ev = JSON.parse(m.data); } catch { return; }
-      onEvent?.(ev);
-      if (ev.type === 'done') finish(resolve, ev);
-      if (ev.type === 'error') finish(reject, new Error(ev.message));
-    };
-    es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED && !aborted) finish(reject, new Error('连接中断'));
-    };
+    const finish = (fn, arg) => { clearInterval(watchdog); es?.close(); fn(arg); };
+
+    function connect() {
+      es = new EventSource(`/api/tasks/${task_id}/events${lastSeq >= 0 ? `?after=${lastSeq}` : ''}`);
+      es.onmessage = (m) => {
+        lastBeat = Date.now();
+        attempts = 0;   // 这条连接是活的
+        let ev;
+        try { ev = JSON.parse(m.data); } catch { return; }
+        if (typeof ev.seq === 'number' && ev.seq > lastSeq) lastSeq = ev.seq;
+        onEvent?.(ev);
+        if (ev.type === 'done') finish(resolve, ev);
+        if (ev.type === 'error') finish(reject, new Error(ev.message));
+      };
+      es.onerror = () => {
+        // 能走到 CLOSED 说明浏览器已放弃这条 EventSource；自己带着最新
+        // seq 重连，比浏览器原地重连（URL 里的 after 是旧的）更不容易重放
+        if (es.readyState === EventSource.CLOSED && !aborted) reconnect('连接中断');
+      };
+    }
+
+    function reconnect(reason) {
+      if (aborted) return;
+      es?.close();
+      attempts += 1;
+      if (attempts > 3) {
+        finish(reject, new Error(`${reason}，重连多次仍失败，已停止（可重试）`));
+        return;
+      }
+      lastBeat = Date.now();   // 给新连接一个完整的 timeoutMs 窗口
+      connect();
+    }
+
+    connect();
+
     // 注册当前任务的中止函数，供暂停按钮调用
     currentAbort = () => {
       aborted = true;
       clearInterval(watchdog);
-      es.close();
+      es?.close();
       const err = new Error('已暂停');
       err.paused = true;
       reject(err);
