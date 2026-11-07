@@ -174,6 +174,41 @@ def test_mapping_validation_drops_fake_cards():
     assert all(3.0 <= s.duration_s <= 7.0 for s in shots)
 
 
+def test_caption_jargon_is_stripped():
+    """线上翻车回归：工程话术绝不能出现在屏幕字幕里。"""
+    b = make_brief()
+    raw = {"shots": [
+        {"card": "card-a", "duration_s": 4, "caption": "出勤 · 力量 · 蛋白，三栏自动落格"},
+        {"card": "card-b", "duration_s": 4, "caption": "五个最贵的误区，逐一标注"},
+        {"card": "card-c", "duration_s": 4, "caption": "这周先挑三个40分钟，写死它"},
+        {"card": "card-d", "duration_s": 4, "caption": "复利曲线：从平缓到向上弯"},
+    ]}
+    # 卡库在不在都不影响这条测试：当成空库，卡名随便填都能过
+    orig = rv.recipes.index
+    rv.recipes.index = lambda: []
+    try:
+        shots = rv._validate_mapping(raw, 16.0, b)
+    finally:
+        rv.recipes.index = orig
+    assert len(shots) == 4
+    assert shots[0].screen_text == "出勤 · 力量 · 蛋白"
+    assert shots[1].screen_text == "五个最贵的误区"
+    assert shots[2].screen_text == "这周先挑三个40分钟"
+    for s in shots:
+        assert not rv._jargon_hits(s.screen_text), (s.screen_text, s.jargon)
+    assert shots[0].jargon and shots[2].jargon  # 留痕，供剧本日志提示
+
+
+def test_check_shot_tsx_allows_split_caption():
+    """拆词入场动画不该被误判为「没有渲染镜头文字」而落模板。"""
+    shot = rv.Shot(idx=1, card="", category="", duration_s=4, narration="",
+                   screen_text="坚持不下来不是意志力差", title="坚持不下来不是意志力差")
+    # 模型把整句拆成字面量片段做逐字入场，代码里有中文但没有整串 title
+    split = GOOD_TSX.replace("{title}", "{'坚持不下来'}{'不是意志力差'}")
+    split = split.replace("<Caption text={title} accent={accent} />", "")
+    assert not any("没有渲染镜头文字" in f for f in rv.check_shot_tsx(split, shot))
+
+
 def test_fallback_shots_deterministic():
     b = make_brief()
     s1 = rv._fallback_shots(b, VideoPlan())
@@ -247,6 +282,8 @@ def main() -> None:
     test_render_sfx_files()
     test_check_shot_tsx_gates()
     test_mapping_validation_drops_fake_cards()
+    test_caption_jargon_is_stripped()
+    test_check_shot_tsx_allows_split_caption()
     test_fallback_shots_deterministic()
     test_generate_full_project()
     test_generate_bad_tsx_falls_back()

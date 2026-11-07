@@ -738,8 +738,10 @@ function decisionRow(scope, ev) {
   let wrap = scope.querySelector('.dcard');
   if (!wrap) {
     wrap = document.createElement('div');
-    wrap.className = 'dcard';
-    wrap.innerHTML = `<div class="dc-h">模型决策记录<span class="dc-n">0</span><span class="dc-caret"></span></div>
+    // 默认折叠：卡名、闸门错误、tsc 报错这些是工程细节，摊在视频上方
+    // 会让人以为「提示词全漏出来了」。想看的人点开就行。
+    wrap.className = 'dcard folded';
+    wrap.innerHTML = `<div class="dc-h">生成过程 · 点开看细节<span class="dc-n">0</span><span class="dc-caret"></span></div>
       <div class="dc-body"></div>`;
     const flip = () => wrap.classList.toggle('folded');
     wrap.querySelector('.dc-h').onclick = flip;

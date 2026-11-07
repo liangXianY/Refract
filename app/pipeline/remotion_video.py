@@ -40,25 +40,43 @@ SFX_KINDS = ("pop", "whoosh", "hit", "chord", "sparkle", "riser")
 
 # ---------------------------------------------------------------- 提示词
 
-MAPPING_SYSTEM = """你是宣传片分镜师，为一条产品介绍短片做「功能→镜头」的映射。
+MAPPING_SYSTEM = """你是短片字幕文案。屏幕上出现的字，观众是普通人，不是开发者。
 
-你会拿到：配方卡索引（每张卡有名字/一句话/适用场景/时长/能量）、内容简报、
+你会拿到：配方卡索引（只用来决定每个镜头怎么动）、内容简报（含章节要点）、
 已定的视觉方案（配色/总时长）。从中选出 5~8 张卡，按能量曲线排布：
 开场低能量起步，中段推进，收尾给峰值然后安静落定。
 
-硬规则：
+每个镜头输出两样东西，必须分开写，**绝不混在一起**：
+- caption：观众在屏幕上读到的一句话，是说给人听的话。
+- motion：给动效工程师的实现说明，描述画面上发生什么动作。
+  motion 只用于写代码，永远不会显示在屏幕上。
+
+caption 硬规则（违反就是事故）：
+1. 一句完整的人话，能直接念给朋友听；不要写成名词罗列、数据标签、提纲或标题冒号说明
+2. **禁止出现任何工程 / 动效 / 开发用语**：写死、落格、标注、扫描、扫过、渲染、
+   组件、参数、字段、槽位、映射、注入、配置、三栏、逐字、逐帧、淡入、淡出、
+   曲线、自动、拆分、对齐、布局、帧、卡名、配方卡、模板、镜头、功能、UI、
+   props、TSX、interpolate…… 这些都是 motion 的词，不是 caption 的词
+3. 禁止描述画面怎么动。「从平缓到向上弯」「逐一标注」「三栏自动落格」
+   「写死它」都是 motion，写成 caption 就删掉重来
+4. ≤20 字，从内容简报里提炼，禁止编造数字；简报里没有的数据一律不写
+5. 不用「·」串三个以上名词当句子，不用「标题：说明」这种提纲格式
+6. 全片 caption 连起来要像一段通顺的口播稿，不能是七条互不相干的标签
+
+motion 硬规则：进场方式、主体动作、转场手法，20~50 字，用工程语言写没关系。
+
+其他硬规则：
 - 卡名必须从索引里原样选，不许自创；同一张卡全片只当一次主角
 - 每个镜头 3~7 秒（文字越多的镜头给越长），全部镜头时长之和约等于给定总时长（±20%）。
-  **文字可读性优先**：screen_text 里的字，按「1 秒读 2-3 个字」估算停留时长，
-  字没读完就转场是硬伤——宁可镜头少一点、每个镜头长一点，也不要赶节奏。
-- screen_text 是这一镜屏幕上出现的短文字（≤20 字，从简报要点里提炼，禁止编造数据）
+  **文字可读性优先**：caption 按「1 秒读 2-3 个字」估算停留时长，字没读完就转场是硬伤
 - sfx 是该镜头内的音效表：t 为镜头内秒数，type 只能是
   pop(登场)/whoosh(转场移动)/hit(强调)/chord(收尾)/sparkle(点缀)/riser(蓄势)，
   每镜 1~3 个，别滥用；镜头衔接处前一镜末尾或后一镜开头给一个 whoosh
 - 最后一个镜头用 outro 类卡收尾落定
 
 只输出 JSON：{"shots": [{"card": "卡名", "category": "类别", "duration_s": 4.5,
-"narration": "这镜讲什么(20字内)", "screen_text": "屏幕文字",
+"caption": "观众看到的一句话", "motion": "画面动作说明",
+"narration": "这镜讲什么(20字内)",
 "sfx": [{"t": 0.2, "type": "pop"}]}]}"""
 
 SHOT_SYSTEM = """你是 Remotion 动效工程师，按配方卡实现一个镜头组件。
@@ -73,6 +91,9 @@ SHOT_SYSTEM = """你是 Remotion 动效工程师，按配方卡实现一个镜�
 - 确定性：禁 Math.random/Date.now/setTimeout/setInterval；随机一律 rand(seed)（lib 已给）
 - 用 useCurrentFrame + interpolate/spring 驱动一切动画，fps=30，组件高度被卡时长约束
 - 画面必须有真实中文文字：title 必须渲染，lines 可选择性渲染
+- **title 是给观众看的一句话，必须原样、完整、连续地出现在画面上**。
+  不许改写、删减、替换成工程术语或卡片动作描述；要做逐字/拆词动画可以，
+  但动画结束后观众读到的一定是 title 原文，不是碎片
 - 遵守卡的节奏铁律：关键文字落定后 hold 满，批量入场靠运动不靠逐个发光，
   单点高质量光效可做；"已知坑"里点名的问题绝对不要再犯
 - 组件根部用 <AbsoluteFill style={{background: bg}}> 包裹
@@ -100,6 +121,49 @@ SHOT_REPAIR = """上一版组件没通过静态检查，问题：
 重写整个组件，修正以上问题。仍然只输出 TSX 代码。"""
 
 
+# ---------------------------------------------------------------- 字幕清洗
+
+# 工程 / 动效黑话：只该出现在 motion 和代码里，出现到屏幕上就是事故。
+# 线上实测翻车案例：「三栏自动落格」「逐一标注」「写死它」被模型当成字幕写进了画面。
+_CAPTION_JARGON = re.compile(
+    r"写死|落格|标注|扫描|扫过|渲染|组件|参数|字段|槽位|映射|注入|配置|"
+    r"三栏|逐字|逐帧|淡入|淡出|曲线|拆分|叠放|对齐|布局|帧|"
+    r"卡名|配方卡|模板|镜头|props|TSX|Remotion|interpolate|hardcode|UI\b",
+    re.I,
+)
+
+
+def _jargon_hits(text: str) -> list[str]:
+    return sorted({m.group(0) for m in _CAPTION_JARGON.finditer(text or "")})
+
+
+def _clean_caption(text: str) -> tuple[str, list[str]]:
+    """把混进字幕的工程话术切掉，只留能念给人听的那半句。
+
+    模型最常写成「人话，工程动作」的拼接（例：「五个最贵的误区，逐一标注」）。
+    按句读切开、丢掉含黑话的片段，比整句丢弃划算——前半句通常就是好文案。
+    整句都是黑话时返回空串，由调用方拿简报里的内容兜底。
+    """
+    s = (text or "").strip().strip("「」\"' ")
+    hits = _jargon_hits(s)
+    if not hits:
+        return s[:24], []
+    parts = [p.strip() for p in re.split(r"[，,。；;：:]", s)]
+    keep = [p for p in parts if p and not _jargon_hits(p)]
+    if keep:
+        # 取第一个干净片段，不取最长的：模型习惯把动作描述写在后半句且写得更长
+        # （「复利曲线：从平缓到向上弯」取最长会拿到那句动作描述）。
+        return keep[0][:24], hits
+    return "", hits
+
+
+def _safe_caption(brief, idx: int) -> str:
+    """兜底字幕：优先用简报里现成的人话，不再让模型临场发挥。"""
+    pool = [brief.hook, brief.cta] + [s.heading for s in brief.outline]
+    pool = [p.strip()[:24] for p in pool if isinstance(p, str) and p.strip()]
+    return pool[idx % len(pool)] if pool else "把这件事讲清楚"
+
+
 # ---------------------------------------------------------------- 数据结构
 
 @dataclass
@@ -120,6 +184,8 @@ class Shot:
     lines: list[str] = field(default_factory=list)
     sfx: list[ShotCue] = field(default_factory=list)
     tsx: str = ""            # 组件源码
+    motion: str = ""         # 给渲染器的动作说明，永不进画面
+    jargon: list[str] = field(default_factory=list)  # 字幕里被切掉的工程黑话
     used_fallback: bool = False
     gate_failures: list[str] = field(default_factory=list)
 
@@ -406,9 +472,15 @@ def check_shot_tsx(tsx: str, shot: Shot) -> list[str]:
     # 文案走 props（{title}）或字面量都算有字；两者皆无才是废件
     if not (re.search(r"[\u4e00-\u9fff]", flat) or "{title" in flat or "title}" in flat):
         failures.append("组件里没有任何文案")
+    # 拆词 / 切片 / 数组展开都算「渲染了 title」，别再要求整串出现在源码里。
+    # 线上实测：模型按配方卡做逐字入场，把句子拆成中文字面量，旧规则判成
+    # 「没有渲染镜头文字」→ 回炉一次还是拆 → 落模板。7 个镜头里 3 个就这么废掉的。
     if shot.title and "{title" not in flat and shot.title not in flat:
-        # 逐字渲染（wordmark 卡的做法）也算：title.split('') / Array.from(title)
-        if not re.search(r"(title\.split|Array\.from\(title|\[\.\.\.title\])", flat):
+        uses_title_expr = re.search(
+            r"(title\.(?:split|slice|charAt|substring|substr|match|replace|indexOf|at)\b"
+            r"|Array\.from\(title|\[\.\.\.title\]|title\[)", flat)
+        has_cjk = bool(re.search(r"[\u4e00-\u9fff]", flat))
+        if not uses_title_expr and not has_cjk:
             failures.append(f"没有渲染镜头文字「{shot.title[:10]}」")
     # 运行时炸点：用了 props 里没解构的变量（实测模型爱写 lines.map 却不解构 lines）
     m = re.search(r"function\s+\w+\s*\(\{([^}]*)\}", flat)
@@ -435,11 +507,16 @@ def check_shot_tsx(tsx: str, shot: Shot) -> list[str]:
 # ---------------------------------------------------------------- 分镜映射
 
 def _digest(brief: ContentBrief) -> str:
-    sections = "；".join(s.heading for s in brief.outline[:6])
+    # 带上每节的要点：只给 heading 的话模型没内容可提炼，只能复述卡片动作，
+    # 于是写出「三栏自动落格」这种工程话术冒充字幕。
+    sections = "；".join(
+        f"{s.heading}（{'、'.join(s.points[:2])}）" if s.points else s.heading
+        for s in brief.outline[:6]
+    )
     facts = "；".join(f.claim for f in brief.facts[:4]) or "无明确数据点"
     return (
         f"主题：{brief.topic}\n切入角度：{brief.angle}\n钩子：{brief.hook}\n"
-        f"章节：{sections}\n事实点：{facts}\nCTA：{brief.cta}"
+        f"章节与要点：{sections}\n事实点：{facts}\nCTA：{brief.cta}"
     )
 
 
@@ -463,6 +540,9 @@ def _fallback_shots(brief: ContentBrief, plan: VideoPlan) -> list[Shot]:
     ]
     shots: list[Shot] = []
     for i, (card, cat, dur, narr, text, s1, s2) in enumerate(spec, 1):
+        text, _ = _clean_caption(text)  # 章节标题也可能混进工程话术
+        if not text:
+            text = brief.topic[:18] or "把这件事讲清楚"
         cues = [ShotCue(t=0.2, type=s1)]
         if s2:
             cues.append(ShotCue(t=dur - 0.5, type=s2))
@@ -472,7 +552,7 @@ def _fallback_shots(brief: ContentBrief, plan: VideoPlan) -> list[Shot]:
     return shots
 
 
-def _validate_mapping(data: dict, total: float) -> list[Shot]:
+def _validate_mapping(data: dict, total: float, brief: ContentBrief | None = None) -> list[Shot]:
     shots_raw = data.get("shots") or []
     if not isinstance(shots_raw, list) or not shots_raw:
         raise ValueError("shots 为空")
@@ -490,10 +570,17 @@ def _validate_mapping(data: dict, total: float) -> list[Shot]:
         sfx = [ShotCue(t=max(0.0, min(dur, float(c.get("t") or 0))), type=c.get("type", "pop"))
                for c in (raw.get("sfx") or []) if isinstance(c, dict)]
         meta = known.get(card_name, {})
-        text = str(raw.get("screen_text") or "")[:24]
+        # caption 是给观众看的人话；motion 只进代码。兼容旧字段名 screen_text。
+        raw_text = str(raw.get("caption") or raw.get("screen_text") or "")
+        text, jargon = _clean_caption(raw_text)
+        if not text and brief is not None:
+            text, _ = _clean_caption(_safe_caption(brief, i))
+        if not text:
+            text = "把这件事讲清楚"
+        motion = str(raw.get("motion") or "")[:80]
         shots.append(Shot(idx=i, card=card_name, category=meta.get("category", ""),
                           duration_s=dur, narration=str(raw.get("narration") or "")[:24],
-                          screen_text=text, title=text,
+                          screen_text=text, title=text, motion=motion, jargon=jargon,
                           lines=[], sfx=sfx or [ShotCue(t=0.2, type="pop")]))
     if len(shots) < 3:
         raise ValueError(f"有效镜头不足: {len(shots)}")
@@ -623,7 +710,9 @@ async def _impl_shot(llm: LLMClient, shot: Shot, plan: VideoPlan, brief: Content
     # 浅底配白字是实测最高频的翻车（整片看不见字）
     text = text_color_for(bg)
     props_block = (
-        f"镜头文字(title): {shot.title}\n"
+        f"镜头文字(title，观众看到的一句话，必须原样渲染): {shot.title}\n"
+        f"画面动作(motion，只用于设计动画，绝不出现在屏幕上): "
+        f"{shot.motion or '按配方卡的节奏铁律设计'}\n"
         f"辅助要点(lines): {'、'.join(shot.lines) or '无'}\n"
         f"配色: bg={bg} accent={palette[0]} accent2={palette[1] if len(palette) > 1 else palette[0]}\n"
         f"正文字色: {text}（已按底色算好对比度，正文一律用它，不要自己另选）\n"
@@ -968,19 +1057,22 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
     )
     try:
         mapping = await llm.structured(system=MAPPING_SYSTEM, user=map_user,
-                                       max_tokens=2500, route="video")
-        shots = _validate_mapping(mapping, total)
+                                       max_tokens=3000, route="video")
+        shots = _validate_mapping(mapping, total, brief)
     except Exception:
         shots = _fallback_shots(brief, plan)
         history.append({"stage": "mapping", "fallback": True})
         await _decide(emit, "script_fallback", "分镜没生成出来，改用内置镜头结构",
                       [f"兜底镜头数：{len(shots)}"], status="warn")
 
-    # 剧本：每个镜头的卡、时长、屏幕文字，全亮给用户
+    # 剧本：只亮字幕（人话）。卡名、时长、动作说明都是工程信息，不该混给用户看。
+    script_lines = [f"{s.idx:02d}. {s.screen_text}" for s in shots]
+    cleaned = sum(1 for s in shots if s.jargon)
+    if cleaned:
+        script_lines.append(f"已清掉 {cleaned} 处工程话术，避免写进画面")
     await _decide(
-        emit, "script", f"剧本（{len(shots)} 个镜头 / {sum(s.duration_s for s in shots):.1f}s）",
-        [f"镜头{s.idx:02d}｜{s.card or '无卡'}｜{s.duration_s:.1f}s｜{s.screen_text}"
-         f"｜{s.narration}" for s in shots],
+        emit, "script", f"字幕（{len(shots)} 句 / {sum(s.duration_s for s in shots):.1f}s）",
+        script_lines,
         shots=[{"idx": s.idx, "card": s.card, "duration": s.duration_s,
                 "screen_text": s.screen_text, "narration": s.narration} for s in shots],
     )
@@ -988,7 +1080,7 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
     # 2) 逐镜头实现
     for s in shots:
         await _decide(emit, "shot_start", f"镜头 {s.idx:02d} 开始实现",
-                      [f"配方卡：{s.card or '无（单焦点定版）'}", f"文案：{s.screen_text}"])
+                      [f"字幕：{s.screen_text}"])
         await _impl_shot(llm, s, plan, brief, history, emit=emit)
         await _decide(
             emit, "shot_done",
@@ -1019,16 +1111,19 @@ async def generate(llm: LLMClient, brief: ContentBrief, plan: VideoPlan,
 
     # 4) 工程级闸门
     proj_failures = check_project(project, shots)
-    shot_soft = [f"Shot{s.idx:02d} 落模板: {'；'.join(s.gate_failures[:2])}"
-                 for s in shots if s.used_fallback]
-    gate = GateResult(ok=not proj_failures,
+    n_fallback = sum(1 for s in shots if s.used_fallback)
+    # 给用户看的是人话；具体的编译错误留在折叠区里，别怼到脸上。
+    shot_soft = [f"镜头 {s.idx:02d} 动效做了简化处理" for s in shots if s.used_fallback]
+    if n_fallback > 1:
+        shot_soft.insert(0, f"有 {n_fallback} 个镜头动效偏简单，这次画面会单调一些")
+    gate = GateResult(ok=not proj_failures and n_fallback <= 1,
                       failures=proj_failures + shot_soft,
                       stats={"shots": len(shots), "sfx": sfx_files,
-                             "fallbacks": sum(1 for s in shots if s.used_fallback),
+                             "fallbacks": n_fallback,
                              "duration_s": round(frame_cursor, 2)})
-    await _decide(emit, "gate", "工程闸门：" + ("全部通过" if gate.ok else "有问题"),
-                  (gate.failures or [f"镜头 {len(shots)} 个 · 音效 {len(sfx_files)} 个 · "
-                                     f"总长 {frame_cursor:.1f}s"]),
+    await _decide(emit, "gate", "成片检查：" + ("通过" if gate.ok else "有简化"),
+                  (shot_soft or proj_failures or
+                   [f"{len(shots)} 句字幕 · 音效 {len(sfx_files)} 个 · 总长 {frame_cursor:.1f}s"]),
                   status="ok" if gate.ok else "warn")
 
     # 降级信息：首选 provider 挂了就记下来（上层给用户提示 + 留痕记实际用的模型）

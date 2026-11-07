@@ -102,7 +102,7 @@ def test_decision_events() -> None:
     script = next(e for e in events if e.get("stage") == "script")
     assert len(script["shots"]) == 3
     assert script["shots"][1]["screen_text"] == "三个能力", script
-    assert "剧本" in script["label"], script["label"]
+    assert "字幕" in script["label"], script["label"]
 
     assert res.gate.ok, res.gate.failures          # 假 TSX 是合法的，不该落模板
     assert not any(s.used_fallback for s in res.shots)
