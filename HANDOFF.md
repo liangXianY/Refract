@@ -7,7 +7,8 @@
 
 ## 1. 项目位置与背景
 
-- **项目根目录**：`D:\workbuddy\2026-10-31-16-04-03\content-agent`（下称 `<root>`）
+- **项目根目录**：`D:\content-agent`（下称 `<root>`）
+  - 2026-11-07 从 `D:\workbuddy\2026-10-31-16-04-03\content-agent` 迁出；服务器部署路径 `/home/ubuntu/app/content-agent` 不受影响
 - **用户决策**：将 Refract 原视频方案**完全替换**为 video-shotcraft（15.5k star 的 Remotion 视频生成 Agent Skill）方案：
   - 本地测试用 **DeepSeek API**（已跑通）
   - 上线服务器换 **Opus**（配 `CCTQ_API_KEY` 即切，零代码改动）

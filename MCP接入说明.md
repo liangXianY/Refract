@@ -28,8 +28,8 @@
 {
   "mcpServers": {
     "refract": {
-      "command": "D:/workbuddy/2026-10-31-16-04-03/content-agent/.venv/Scripts/python.exe",
-      "args": ["D:/workbuddy/2026-10-31-16-04-03/content-agent/mcp_server.py"],
+      "command": "D:/content-agent/.venv/Scripts/python.exe",
+      "args": ["D:/content-agent/mcp_server.py"],
       "env": {
         "DEEPSEEK_API_KEY": "你的 key",
         "TAVILY_API_KEY": "你的 key（web_search 用）",
@@ -39,6 +39,10 @@
   }
 }
 ```
+
+> 注：项目于 2026-11-07 迁到 `D:\content-agent`，同次缓存清理删掉了 `.venv`。
+> 首次接入前先重建：`cd D:\content-agent && python -m venv .venv && .venv\Scripts\pip install -r requirements.txt`。
+> 不要用 anaconda base 直接起服务——它没装 `mcp` 包（`app` 本身能 import，但 `mcp_server.py` 起不来）。
 
 ### 2. WorkBuddy
 
